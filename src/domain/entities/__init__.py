@@ -1,4 +1,4 @@
-"""Domain package for the migration platform."""
+"""Entity package for the domain layer."""
 
 from __future__ import annotations
 
