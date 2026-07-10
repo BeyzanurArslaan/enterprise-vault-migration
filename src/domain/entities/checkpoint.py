@@ -1,8 +1,24 @@
-"""Represents checkpoint domain entities.
+"""Checkpoint entity for the migration domain.
 
-This module will contain the Checkpoint aggregate in a future sprint.
+This module defines a checkpoint artifact used to track progress during a
+migration job.
 """
 
 from __future__ import annotations
 
-__all__: list[str] = []
+from dataclasses import dataclass
+
+from ..value_objects.identifiers import CheckpointId, MigrationJobId
+from .base import BaseEntity
+
+
+@dataclass(slots=True, kw_only=True)
+class Checkpoint(BaseEntity):
+    """Immutable structural representation of a migration checkpoint."""
+
+    id: CheckpointId
+    job_id: MigrationJobId
+    last_processed_item_id: str
+
+
+__all__: list[str] = ["Checkpoint"]

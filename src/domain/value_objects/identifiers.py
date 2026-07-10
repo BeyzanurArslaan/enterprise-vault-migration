@@ -45,10 +45,50 @@ class AttachmentId:
     value: UUID
 
 
+@dataclass(frozen=True, slots=True)
+class ArchivedFileId:
+    """Immutable identifier for an archived file."""
+
+    value: UUID
+
+
+@dataclass(frozen=True, slots=True)
+class CheckpointId:
+    """Immutable identifier for a checkpoint."""
+
+    value: UUID
+
+
+@dataclass(frozen=True, slots=True)
+class RetryRecordId:
+    """Immutable identifier for a retry record."""
+
+    value: UUID
+
+
+@dataclass(frozen=True, slots=True)
+class AuditEventId:
+    """Immutable identifier for an audit event."""
+
+    value: UUID
+
+
+@dataclass(frozen=True, slots=True)
+class RetentionPolicyId:
+    """Immutable identifier for a retention policy."""
+
+    value: UUID
+
+
 __all__: list[str] = [
     "MigrationJobId",
     "MigrationItemId",
     "ArchiveId",
     "MailItemId",
     "AttachmentId",
+    "ArchivedFileId",
+    "CheckpointId",
+    "RetryRecordId",
+    "AuditEventId",
+    "RetentionPolicyId",
 ]
