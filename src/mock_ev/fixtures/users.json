@@ -1,0 +1,17 @@
+[
+  {
+    "id": "user-001",
+    "name": "Alicia Patel",
+    "department": "Finance"
+  },
+  {
+    "id": "user-002",
+    "name": "Marcus Chen",
+    "department": "Operations"
+  },
+  {
+    "id": "user-003",
+    "name": "Sofia Alvarez",
+    "department": "Legal"
+  }
+]

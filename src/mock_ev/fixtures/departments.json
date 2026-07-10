@@ -1,0 +1,14 @@
+[
+  {
+    "name": "Finance",
+    "manager": "Alicia Patel"
+  },
+  {
+    "name": "Operations",
+    "manager": "Marcus Chen"
+  },
+  {
+    "name": "Legal",
+    "manager": "Sofia Alvarez"
+  }
+]

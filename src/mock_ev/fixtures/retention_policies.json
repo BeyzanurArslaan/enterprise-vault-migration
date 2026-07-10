@@ -1,0 +1,17 @@
+[
+  {
+    "name": "Standard",
+    "retention_days": 2555,
+    "classification": "business"
+  },
+  {
+    "name": "Compliance",
+    "retention_days": 3650,
+    "classification": "regulated"
+  },
+  {
+    "name": "Short-Term",
+    "retention_days": 730,
+    "classification": "operational"
+  }
+]

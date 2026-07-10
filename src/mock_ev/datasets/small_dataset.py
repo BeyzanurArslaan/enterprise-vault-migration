@@ -1,0 +1,6 @@
+"""Small dataset placeholder for the mock Enterprise Vault subsystem.
+
+This module reserves a dataset definition for small simulated source content.
+"""
+
+from __future__ import annotations
