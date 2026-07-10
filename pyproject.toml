@@ -50,6 +50,8 @@ target-version = ["py312"]
 [tool.mypy]
 python_version = "3.12"
 files = ["src", "tests"]
+mypy_path = ["src"]
+explicit_package_bases = true
 strict = true
 warn_unused_configs = true
 show_error_codes = true

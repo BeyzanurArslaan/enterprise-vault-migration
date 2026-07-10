@@ -25,8 +25,8 @@ class Archive(BaseEntity):
     id: ArchiveId
     name: str
     archive_type: ArchiveType
-    mail_items: list["MailItem"] = field(default_factory=list)
-    archived_files: list["ArchivedFile"] = field(default_factory=list)
+    mail_items: list[MailItem] = field(default_factory=list)
+    archived_files: list[ArchivedFile] = field(default_factory=list)
 
 
 __all__: list[str] = ["Archive"]

@@ -26,8 +26,8 @@ class MigrationJob(BaseEntity):
     id: MigrationJobId
     name: str
     status: JobStatus
-    source_archive: "Archive"
-    items: list["MigrationItem"] = field(default_factory=list)
+    source_archive: Archive
+    items: list[MigrationItem] = field(default_factory=list)
     started_at: datetime | None = None
     completed_at: datetime | None = None
 

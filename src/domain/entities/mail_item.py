@@ -31,8 +31,8 @@ class MailItem(BaseEntity):
     sent_at: datetime
     received_at: datetime
     body: str
-    attachments: list["Attachment"] = field(default_factory=list)
-    retention_policy: "RetentionPolicy"
+    attachments: list[Attachment] = field(default_factory=list)
+    retention_policy: RetentionPolicy
     migration_status: MigrationStatus
 
 
