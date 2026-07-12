@@ -6,6 +6,18 @@ scaffold.
 
 from __future__ import annotations
 
+from .in_memory_storage import (
+    DocumentStorage,
+    FolderStorage,
+    MetadataStorage,
+    UploadSessionStorage,
+    WorkspaceStorage,
+)
+
 __all__: list[str] = [
-    "in_memory_storage",
+    "DocumentStorage",
+    "FolderStorage",
+    "MetadataStorage",
+    "UploadSessionStorage",
+    "WorkspaceStorage",
 ]
