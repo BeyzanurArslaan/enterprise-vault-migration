@@ -38,6 +38,7 @@ class MockStorionXTargetAdapter(StorionXTargetPort):
         self.started_at = started_at or datetime.now(tz=UTC)
         self._active_session_id: str | None = None
         self._uploaded_document_ids: set[str] = set()
+        self._uploaded_documents: dict[str, TransformedDocument] = {}
 
     def create_archive(self, archive_id: str) -> str:
         """Create a target archive identifier placeholder."""
@@ -67,11 +68,21 @@ class MockStorionXTargetAdapter(StorionXTargetPort):
         self._ensure_session()
         self.document_storage.add(stored_document)
         self._uploaded_document_ids.add(stored_document.id)
+        self._uploaded_documents[stored_document.id] = transformed_document
         self.upload_service.upload_document(
             document=stored_document,
             session_id=self._active_session_id,
         )
         return stored_document
+
+    def get_uploaded_document(self, document_id: str) -> TransformedDocument | None:
+        """Return an uploaded document using the target-neutral contract."""
+
+        stored_document = self.document_storage.get(document_id)
+        if stored_document is None:
+            return None
+
+        return self._uploaded_documents.get(document_id)
 
     def finalize_job(self, job_id: str) -> UploadSession | str:
         """Finalize the active upload session when one exists."""

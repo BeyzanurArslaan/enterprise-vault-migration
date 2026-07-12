@@ -116,3 +116,26 @@ def test_mock_storionx_target_adapter_skips_duplicate_document_uploads() -> None
     active_session = adapter.upload_service.active_session
     assert active_session is not None
     assert active_session.uploaded_documents == [first_document]
+
+
+def test_mock_storionx_target_adapter_returns_target_neutral_documents() -> None:
+    """The adapter should return target-neutral uploaded documents for verification."""
+
+    transformed_document = _build_transformed_document()
+    adapter = MockStorionXTargetAdapter(
+        workspace_id="workspace-1",
+        session_id="session-1",
+        started_at=datetime(2026, 1, 1, 12, 0, tzinfo=UTC),
+    )
+
+    adapter.upload_archived_file(
+        transformed_document.source_identifier,
+        transformed_document,
+    )
+    uploaded_document = adapter.get_uploaded_document(transformed_document.source_identifier)
+
+    assert uploaded_document == transformed_document
+    assert isinstance(uploaded_document, TransformedDocument)
+    assert adapter.document_storage.get(transformed_document.source_identifier) == (
+        _build_expected_document()
+    )

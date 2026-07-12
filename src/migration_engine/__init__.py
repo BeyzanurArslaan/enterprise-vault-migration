@@ -23,6 +23,7 @@ from .state_machine import MigrationState, MigrationStateMachine
 from .step_context import MigrationStepContext
 from .transformation import TransformationResult, TransformedDocument
 from .upload import UploadBatchResult
+from .verification import VerificationResult
 
 __all__: list[str] = [
     "ExecutionResult",
@@ -43,4 +44,5 @@ __all__: list[str] = [
     "UploadBatchResult",
     "StepRegistry",
     "TransformationResult",
+    "VerificationResult",
 ]

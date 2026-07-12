@@ -63,6 +63,11 @@ class _RecordingTargetPort(StorionXTargetPort):
 
         return job_id
 
+    def get_uploaded_document(self, document_id: str) -> TransformedDocument | None:
+        """Return no uploaded documents for upload step tests."""
+
+        return None
+
 
 def _build_metrics() -> MigrationMetrics:
     """Create a sample metrics object for upload tests."""
