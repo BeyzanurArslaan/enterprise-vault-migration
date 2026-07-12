@@ -8,9 +8,10 @@ without coupling the engine to mock storionX implementations.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from migration_engine.transformation import TransformedDocument
+if TYPE_CHECKING:
+    from migration_engine.transformation import TransformedDocument
 
 
 class StorionXTargetPort(ABC):

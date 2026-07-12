@@ -129,6 +129,7 @@ def test_migration_step_context_aggregates_engine_contracts() -> None:
     assert step_context.transformation_result is None
     assert step_context.upload_result is None
     assert step_context.verification_result is None
+    assert step_context.execution_result is None
 
     with pytest.raises(FrozenInstanceError):
         type(step_context).__setattr__(step_context, "execution_context", execution_context)

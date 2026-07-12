@@ -13,6 +13,7 @@ from mock_ev.entities import VaultStore
 
 from .contracts import ExecutionContext, ExecutionReport
 from .discovery import ArchiveDiscoveryResult
+from .execution_result import ExecutionResult
 from .extraction import ExtractionResult
 from .progress_tracker import ProgressTracker
 from .state_machine import MigrationStateMachine
@@ -35,6 +36,7 @@ class MigrationStepContext:
     transformation_result: TransformationResult | None = None
     upload_result: UploadBatchResult | None = None
     verification_result: VerificationResult | None = None
+    execution_result: ExecutionResult | None = None
 
 
 __all__: list[str] = ["MigrationStepContext"]
