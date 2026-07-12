@@ -124,11 +124,6 @@ class PipelineRunner:
                     latest_metrics=latest_metrics,
                     started_at=execution_context.started_at,
                     finished_at=step_timestamp,
-                    total_steps=len(self.steps),
-                    processed_steps=successful_steps + failed_steps + skipped_steps,
-                    successful_steps=successful_steps,
-                    failed_steps=failed_steps,
-                    skipped_steps=skipped_steps,
                 )
                 cumulative_report = self._build_execution_report(
                     successful_steps=successful_steps,
@@ -142,9 +137,6 @@ class PipelineRunner:
                 self._sync_tracker(
                     context=current_context,
                     current_timestamp=step_timestamp,
-                    successful_steps=successful_steps,
-                    failed_steps=failed_steps,
-                    skipped_steps=skipped_steps,
                     metrics=cumulative_metrics,
                     report=cumulative_report,
                 )
@@ -170,11 +162,6 @@ class PipelineRunner:
                     latest_metrics=latest_metrics,
                     started_at=execution_context.started_at,
                     finished_at=failure_timestamp,
-                    total_steps=len(self.steps),
-                    processed_steps=successful_steps + failed_steps + skipped_steps,
-                    successful_steps=successful_steps,
-                    failed_steps=failed_steps,
-                    skipped_steps=skipped_steps,
                 )
                 failure_report = self._build_execution_report(
                     successful_steps=successful_steps,
@@ -193,9 +180,6 @@ class PipelineRunner:
                 self._sync_tracker(
                     context=failure_context,
                     current_timestamp=failure_timestamp,
-                    successful_steps=successful_steps,
-                    failed_steps=failed_steps,
-                    skipped_steps=skipped_steps,
                     metrics=failure_metrics,
                     report=failure_report,
                 )
@@ -214,11 +198,6 @@ class PipelineRunner:
             latest_metrics=latest_metrics,
             started_at=execution_context.started_at,
             finished_at=completion_timestamp,
-            total_steps=len(self.steps),
-            processed_steps=successful_steps + failed_steps + skipped_steps,
-            successful_steps=successful_steps,
-            failed_steps=failed_steps,
-            skipped_steps=skipped_steps,
         )
         final_report = self._build_execution_report(
             successful_steps=successful_steps,
@@ -239,9 +218,6 @@ class PipelineRunner:
         self._sync_tracker(
             context=final_context,
             current_timestamp=completion_timestamp,
-            successful_steps=successful_steps,
-            failed_steps=failed_steps,
-            skipped_steps=skipped_steps,
             metrics=final_metrics,
             report=final_report,
         )
@@ -263,7 +239,7 @@ class PipelineRunner:
         """Create the initial progress snapshot for a run."""
 
         return ProgressSnapshot(
-            total_items=len(self.steps),
+            total_items=0,
             processed_items=0,
             successful_items=0,
             failed_items=0,
@@ -300,9 +276,6 @@ class PipelineRunner:
         *,
         context: ExecutionContext,
         current_timestamp: datetime,
-        successful_steps: int,
-        failed_steps: int,
-        skipped_steps: int,
         metrics: MigrationMetrics,
         report: ExecutionReport,
     ) -> None:
@@ -311,13 +284,13 @@ class PipelineRunner:
         if self.progress_tracker is None:
             return
 
-        processed_steps = successful_steps + failed_steps + skipped_steps
         current_snapshot = replace(
             self.progress_tracker.current_snapshot,
-            processed_items=processed_steps,
-            successful_items=successful_steps,
-            failed_items=failed_steps,
-            skipped_items=skipped_steps,
+            total_items=metrics.total_items,
+            processed_items=metrics.processed_items,
+            successful_items=metrics.successful_items,
+            failed_items=metrics.failed_items,
+            skipped_items=metrics.skipped_items,
             last_updated=current_timestamp,
         )
         execution_context = replace(
@@ -341,47 +314,37 @@ class PipelineRunner:
         latest_metrics: MigrationMetrics | None,
         started_at: datetime,
         finished_at: datetime,
-        total_steps: int,
-        processed_steps: int,
-        successful_steps: int,
-        failed_steps: int,
-        skipped_steps: int,
     ) -> MigrationMetrics:
         """Resolve the metrics object for the current orchestration state."""
 
         duration_seconds = max((finished_at - started_at).total_seconds(), 0.0)
-        throughput = processed_steps / duration_seconds if duration_seconds > 0.0 else 0.0
         if latest_metrics is not None:
+            throughput = (
+                latest_metrics.processed_items / duration_seconds if duration_seconds > 0.0 else 0.0
+            )
             return replace(
                 latest_metrics,
                 duration_seconds=duration_seconds,
                 throughput_items_per_second=throughput,
-                total_items=total_steps,
-                processed_items=processed_steps,
-                successful_items=successful_steps,
-                failed_items=failed_steps,
-                skipped_items=skipped_steps,
-                uploaded_items=successful_steps,
-                verification_failures=failed_steps,
                 started_at=started_at,
                 finished_at=finished_at,
             )
 
         return MigrationMetrics(
             duration_seconds=duration_seconds,
-            throughput_items_per_second=throughput,
+            throughput_items_per_second=0.0,
             average_item_size=0,
             processed_bytes=0,
             estimated_remaining_seconds=None,
             peak_memory_usage_mb=None,
-            total_items=total_steps,
-            processed_items=processed_steps,
-            successful_items=successful_steps,
-            failed_items=failed_steps,
-            skipped_items=skipped_steps,
+            total_items=0,
+            processed_items=0,
+            successful_items=0,
+            failed_items=0,
+            skipped_items=0,
             retried_items=0,
-            uploaded_items=successful_steps,
-            verification_failures=failed_steps,
+            uploaded_items=0,
+            verification_failures=0,
             total_bytes=0,
             started_at=started_at,
             finished_at=finished_at,

@@ -239,7 +239,7 @@ def test_pipeline_runner_rolls_back_and_marks_failure() -> None:
     assert result.execution_report.successful_steps == 1
     assert result.execution_report.failed_steps == 0
     assert result.execution_report.metrics is not None
-    assert result.execution_report.metrics.total_items == 2
+    assert result.execution_report.metrics.total_items == 1
     assert result.execution_report.metrics.processed_items == 1
     assert runner.execution_result == result
     assert runner.execution_context is not None
