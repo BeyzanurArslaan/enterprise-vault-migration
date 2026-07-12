@@ -46,7 +46,7 @@ def _build_execution_context() -> ExecutionContext:
     )
 
 
-def _build_execution_report() -> ExecutionReport:
+def _build_execution_report(*, metrics: MigrationMetrics | None = None) -> ExecutionReport:
     """Create a sample execution report for tracker tests."""
 
     return ExecutionReport(
@@ -55,6 +55,7 @@ def _build_execution_report() -> ExecutionReport:
         skipped_steps=1,
         duration_seconds=12.5,
         completed=True,
+        metrics=metrics,
     )
 
 
@@ -85,8 +86,8 @@ def test_progress_tracker_tracks_and_resets_execution_state() -> None:
         failed_items=1,
     )
     execution_context = _build_execution_context()
-    execution_report = _build_execution_report()
     metrics = _build_metrics()
+    execution_report = _build_execution_report(metrics=metrics)
 
     tracker = ProgressTracker(
         snapshot=initial_snapshot,
@@ -100,6 +101,7 @@ def test_progress_tracker_tracks_and_resets_execution_state() -> None:
     assert tracker.current_metrics == metrics
     assert tracker.current_execution_context == execution_context
     assert tracker.current_execution_report == execution_report
+    assert tracker.current_execution_report.metrics == metrics
     assert tracker.current_migration_state == MigrationState.EXTRACTING
 
     tracker.update_snapshot(updated_snapshot)
@@ -113,6 +115,7 @@ def test_progress_tracker_tracks_and_resets_execution_state() -> None:
     assert tracker.current_metrics == metrics
     assert tracker.current_execution_context == execution_context
     assert tracker.current_execution_report == execution_report
+    assert tracker.current_execution_report.metrics == metrics
     assert tracker.current_migration_state == updated_state
 
     tracker.reset()

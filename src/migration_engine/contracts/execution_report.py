@@ -1,12 +1,15 @@
 """Migration execution report contract module.
 
 This module defines the immutable summary object produced by a migration
-pipeline run. The report captures only high-level execution outcomes.
+pipeline run. The report captures high-level execution outcomes and can carry
+optional metrics for reporting compatibility.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+
+from ..metrics import MigrationMetrics
 
 
 @dataclass(slots=True, frozen=True)
@@ -18,6 +21,7 @@ class ExecutionReport:
     skipped_steps: int
     duration_seconds: float
     completed: bool
+    metrics: MigrationMetrics | None = None
 
 
 __all__: list[str] = ["ExecutionReport"]

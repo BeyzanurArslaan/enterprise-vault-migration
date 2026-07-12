@@ -1,12 +1,13 @@
 """Migration metrics module for the migration engine foundation.
 
 This module defines the immutable metrics model used by the migration engine
-foundation. The class currently carries only typed data and no behavior.
+foundation. The model captures structural execution metrics and no behavior.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 
 
 @dataclass(slots=True, frozen=True)
@@ -19,6 +20,17 @@ class MigrationMetrics:
     processed_bytes: int
     estimated_remaining_seconds: float | None
     peak_memory_usage_mb: float | None
+    total_items: int = 0
+    processed_items: int = 0
+    successful_items: int = 0
+    failed_items: int = 0
+    skipped_items: int = 0
+    retried_items: int = 0
+    uploaded_items: int = 0
+    verification_failures: int = 0
+    total_bytes: int = 0
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
 
 
 __all__: list[str] = ["MigrationMetrics"]
