@@ -19,6 +19,15 @@ from ..metrics import MigrationMetrics
 from ..pipeline import MigrationPipeline
 from ..progress_tracker import ProgressTracker
 from ..state_machine import MigrationState, MigrationStateMachine
+from ..step_context import MigrationStepContext
+from ..steps import (
+    DiscoverArchivesStep,
+    ExtractItemsStep,
+    FinalizeMigrationStep,
+    TransformItemsStep,
+    UploadItemsStep,
+    VerifyItemsStep,
+)
 from .step_registry import StepRegistry
 
 
@@ -27,23 +36,32 @@ class PipelineRunner:
 
     def __init__(
         self,
-        steps: Sequence[PipelineStep],
+        steps: Sequence[PipelineStep] = (),
         *,
         pipeline: MigrationPipeline | None = None,
+        step_registry: StepRegistry | None = None,
+        initial_context: MigrationStepContext | None = None,
         context: MigrationContext | None = None,
     ) -> None:
         """Create a runner configured with ordered pipeline steps."""
 
-        self.step_registry = StepRegistry(steps)
+        if step_registry is not None:
+            self.step_registry = step_registry
+        elif pipeline is not None:
+            self.step_registry = StepRegistry(pipeline.steps)
+        else:
+            self.step_registry = StepRegistry(steps)
         self.steps: tuple[PipelineStep, ...] = self.step_registry.resolve()
-        self.pipeline = pipeline
+        self.pipeline = pipeline or MigrationPipeline(steps=self.steps)
         self.context = context
+        self.initial_context = initial_context
         self.state_machine = MigrationStateMachine(current_state=MigrationState.CREATED)
         self.progress_tracker: ProgressTracker | None = None
         self.execution_context: ExecutionContext | None = None
         self.execution_report: ExecutionReport | None = None
         self.execution_result: ExecutionResult | None = None
         self.metrics: MigrationMetrics | None = None
+        self.current_step_context: MigrationStepContext | None = initial_context
 
     def initialize(self) -> ExecutionContext:
         """Prepare the runner before pipeline execution begins."""
@@ -52,27 +70,10 @@ class PipelineRunner:
             return self.execution_context
 
         self.steps = self.step_registry.resolve()
-        started_at = self._current_timestamp()
-        self.state_machine.transition_to(MigrationState.INITIALIZING)
-
-        progress_tracker = ProgressTracker(
-            snapshot=self._build_initial_snapshot(started_at),
-            migration_state=self.state_machine.current_state,
-        )
-        execution_context = ExecutionContext(
-            migration_id=f"migration-{uuid4().hex}",
-            configuration=MigrationConfiguration(),
-            started_at=started_at,
-            current_step=None,
-            metrics=self.metrics,
-            progress_tracker=progress_tracker,
-            state=self.state_machine.current_state,
-            current_timestamp=started_at,
-        )
-        progress_tracker.update_execution_context(execution_context)
-
+        execution_context, progress_tracker, step_context = self._build_initial_runtime()
         self.progress_tracker = progress_tracker
         self.execution_context = execution_context
+        self.current_step_context = step_context
         return execution_context
 
     def run(self) -> ExecutionResult:
@@ -86,6 +87,7 @@ class PipelineRunner:
         skipped_steps = 0
         latest_metrics = self.metrics
         current_context = execution_context
+        current_step_context = self._build_current_step_context(execution_context)
         completed_steps: list[PipelineStep] = []
         errors: list[str] = []
 
@@ -101,16 +103,37 @@ class PipelineRunner:
                 current_timestamp=self._current_timestamp(),
                 metrics=latest_metrics,
             )
+            current_step_context = replace(
+                current_step_context,
+                execution_context=current_context,
+                progress_tracker=self.progress_tracker or current_step_context.progress_tracker,
+                state_machine=self.state_machine,
+            )
 
             try:
                 step.prepare(current_context)
-                step_report = step.execute(current_context)
+                step_result_context = self._execute_step(step, current_step_context)
+                if step_result_context is not None:
+                    current_step_context = step_result_context
+                    self.current_step_context = current_step_context
+                    current_context = step_result_context.execution_context
+                    step_report = step_result_context.execution_report
+                    if step_report is None:
+                        message = f"{step.__class__.__name__} did not produce an execution report"
+                        raise RuntimeError(message)
+                    latest_metrics = (
+                        step_result_context.execution_context.metrics
+                        or step_report.metrics
+                        or latest_metrics
+                    )
+                else:
+                    step_report = step.execute(current_context)
+                    if step_report.metrics is not None:
+                        latest_metrics = step_report.metrics
 
                 successful_steps += step_report.successful_steps
                 failed_steps += step_report.failed_steps
                 skipped_steps += step_report.skipped_steps
-                if step_report.metrics is not None:
-                    latest_metrics = step_report.metrics
 
                 step_timestamp = self._current_timestamp()
                 current_context = self._advance_context(
@@ -120,29 +143,28 @@ class PipelineRunner:
                     current_timestamp=step_timestamp,
                     metrics=latest_metrics,
                 )
-                cumulative_metrics = self._resolve_metrics(
+                if step_result_context is not None:
+                    current_step_context = replace(
+                        current_step_context,
+                        execution_context=current_context,
+                        progress_tracker=(
+                            self.progress_tracker or current_step_context.progress_tracker
+                        ),
+                        state_machine=self.state_machine,
+                    )
+                    self.current_step_context = current_step_context
+
+                resolved_metrics = self._resolve_metrics(
                     latest_metrics=latest_metrics,
                     started_at=execution_context.started_at,
                     finished_at=step_timestamp,
                 )
-                cumulative_report = self._build_execution_report(
-                    successful_steps=successful_steps,
-                    failed_steps=failed_steps,
-                    skipped_steps=skipped_steps,
-                    started_at=execution_context.started_at,
-                    finished_at=step_timestamp,
-                    metrics=cumulative_metrics,
-                    completed=False,
-                )
                 self._sync_tracker(
                     context=current_context,
                     current_timestamp=step_timestamp,
-                    metrics=cumulative_metrics,
-                    report=cumulative_report,
+                    metrics=resolved_metrics,
+                    report=step_report,
                 )
-                if not self._is_successful(step_report):
-                    message = f"{step.__class__.__name__} did not complete successfully"
-                    raise RuntimeError(message)
 
                 step.finalize(current_context)
                 completed_steps.append(step)
@@ -183,6 +205,13 @@ class PipelineRunner:
                     metrics=failure_metrics,
                     report=failure_report,
                 )
+                self.current_step_context = replace(
+                    current_step_context,
+                    execution_context=failure_context,
+                    progress_tracker=self.progress_tracker or current_step_context.progress_tracker,
+                    state_machine=self.state_machine,
+                    execution_report=failure_report,
+                )
                 return self._build_result(
                     success=False,
                     report=failure_report,
@@ -221,6 +250,19 @@ class PipelineRunner:
             metrics=final_metrics,
             report=final_report,
         )
+        self.current_step_context = replace(
+            current_step_context,
+            execution_context=final_context,
+            progress_tracker=(self.progress_tracker or current_step_context.progress_tracker),
+            state_machine=self.state_machine,
+            execution_report=final_report,
+        )
+        if self.current_step_context.execution_result is not None:
+            self.execution_result = self.current_step_context.execution_result
+            self.execution_report = final_report
+            self.execution_context = final_context
+            self.metrics = final_metrics
+            return self.current_step_context.execution_result
         return self._build_result(
             success=True,
             report=final_report,
@@ -270,6 +312,116 @@ class PipelineRunner:
             state=current_state,
             current_timestamp=current_timestamp,
         )
+
+    def _build_initial_runtime(
+        self,
+    ) -> tuple[ExecutionContext, ProgressTracker, MigrationStepContext]:
+        """Build the initial execution and step contexts for a run."""
+
+        if self.initial_context is not None:
+            execution_context = self.initial_context.execution_context
+            started_at = execution_context.started_at
+            self.state_machine = MigrationStateMachine(
+                current_state=execution_context.state or MigrationState.CREATED,
+            )
+            if self.state_machine.can_transition(MigrationState.INITIALIZING):
+                self.state_machine.transition_to(MigrationState.INITIALIZING)
+
+            progress_tracker = (
+                self.initial_context.progress_tracker
+                or execution_context.progress_tracker
+                or ProgressTracker(
+                    snapshot=self._build_initial_snapshot(started_at),
+                    migration_state=self.state_machine.current_state,
+                )
+            )
+            resolved_execution_context = replace(
+                execution_context,
+                current_step=None,
+                metrics=self.metrics or execution_context.metrics,
+                progress_tracker=progress_tracker,
+                state=self.state_machine.current_state,
+                current_timestamp=execution_context.current_timestamp or started_at,
+            )
+            step_context = replace(
+                self.initial_context,
+                execution_context=resolved_execution_context,
+                progress_tracker=progress_tracker,
+                state_machine=self.state_machine,
+            )
+            progress_tracker.update_execution_context(resolved_execution_context)
+            progress_tracker.update_migration_state(self.state_machine.current_state)
+            return resolved_execution_context, progress_tracker, step_context
+
+        started_at = self._current_timestamp()
+        self.state_machine.transition_to(MigrationState.INITIALIZING)
+        progress_tracker = ProgressTracker(
+            snapshot=self._build_initial_snapshot(started_at),
+            migration_state=self.state_machine.current_state,
+        )
+        execution_context = ExecutionContext(
+            migration_id=f"migration-{uuid4().hex}",
+            configuration=MigrationConfiguration(),
+            started_at=started_at,
+            current_step=None,
+            metrics=self.metrics,
+            progress_tracker=progress_tracker,
+            state=self.state_machine.current_state,
+            current_timestamp=started_at,
+        )
+        progress_tracker.update_execution_context(execution_context)
+        step_context = MigrationStepContext(
+            execution_context=execution_context,
+            progress_tracker=progress_tracker,
+            state_machine=self.state_machine,
+            execution_report=None,
+        )
+        return execution_context, progress_tracker, step_context
+
+    def _build_current_step_context(
+        self,
+        execution_context: ExecutionContext,
+    ) -> MigrationStepContext:
+        """Return the runtime step context used for concrete step execution."""
+
+        if self.current_step_context is not None:
+            return replace(
+                self.current_step_context,
+                execution_context=execution_context,
+                progress_tracker=(
+                    self.progress_tracker or self.current_step_context.progress_tracker
+                ),
+                state_machine=self.state_machine,
+            )
+
+        return MigrationStepContext(
+            execution_context=execution_context,
+            progress_tracker=self.progress_tracker or execution_context.progress_tracker,
+            state_machine=self.state_machine,
+            execution_report=self.execution_report,
+        )
+
+    def _execute_step(
+        self,
+        step: PipelineStep,
+        context: MigrationStepContext,
+    ) -> MigrationStepContext | None:
+        """Execute a step using its concrete migration contract when available."""
+
+        if type(step) is DiscoverArchivesStep:
+            return step.discover(context)
+        if type(step) is ExtractItemsStep:
+            return step.extract(context)
+        if type(step) is TransformItemsStep:
+            return step.transform(context)
+        if type(step) is UploadItemsStep:
+            return step.upload(context)
+        if type(step) is VerifyItemsStep:
+            return step.verify(context)
+        if type(step) is FinalizeMigrationStep:
+            return step.finalize_migration(context)
+
+        return None
 
     def _sync_tracker(
         self,
@@ -424,11 +576,6 @@ class PipelineRunner:
             "VerifyItemsStep": MigrationState.VERIFYING,
             "FinalizeMigrationStep": MigrationState.FINALIZING,
         }.get(state_name)
-
-    def _is_successful(self, report: ExecutionReport) -> bool:
-        """Determine whether a step report represents a successful step."""
-
-        return report.completed and report.failed_steps == 0
 
     def _current_timestamp(self) -> datetime:
         """Return the current UTC timestamp for orchestration bookkeeping."""

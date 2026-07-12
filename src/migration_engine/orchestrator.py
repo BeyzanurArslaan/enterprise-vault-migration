@@ -1,17 +1,45 @@
 """Migration orchestrator module for the migration engine foundation.
 
-This module defines the public orchestrator placeholder that will eventually
-coordinate the end-to-end migration workflow between Enterprise Vault and
-storionX. The current implementation intentionally contains no behavior.
+This module defines the thin orchestration façade that delegates migration
+execution to the concrete pipeline runner. The orchestrator keeps application
+composition separate from workflow execution and does not implement migration
+logic itself.
 """
 
 from __future__ import annotations
 
+from .execution_result import ExecutionResult
+from .pipeline import MigrationPipeline
+from .runner import PipelineRunner, StepRegistry
+from .step_context import MigrationStepContext
+
 
 class MigrationOrchestrator:
-    """Placeholder orchestrator for the migration engine workflow."""
+    """Thin façade over the concrete migration pipeline runner."""
 
-    pass
+    def __init__(
+        self,
+        *,
+        runner: PipelineRunner,
+        step_registry: StepRegistry | None = None,
+        initial_context: MigrationStepContext | None = None,
+        pipeline: MigrationPipeline | None = None,
+    ) -> None:
+        """Create an orchestrator that delegates to an existing pipeline runner."""
+
+        self.runner = runner
+        if step_registry is not None:
+            self.runner.step_registry = step_registry
+            self.runner.steps = step_registry.resolve()
+        if pipeline is not None:
+            self.runner.pipeline = pipeline
+        if initial_context is not None:
+            self.runner.initial_context = initial_context
+
+    def run(self) -> ExecutionResult:
+        """Execute the configured migration workflow."""
+
+        return self.runner.run()
 
 
 __all__: list[str] = ["MigrationOrchestrator"]
