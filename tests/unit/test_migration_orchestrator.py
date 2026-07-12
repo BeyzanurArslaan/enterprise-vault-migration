@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+from migration_engine.checkpoint import CheckpointSnapshot
 from migration_engine.configuration import MigrationConfiguration
 from migration_engine.contracts import ExecutionContext, ProgressSnapshot
 from migration_engine.execution_result import ExecutionResult
@@ -86,10 +87,15 @@ class _RecordingRunner(PipelineRunner):
         self.run_calls = 0
         self.result = ExecutionResult(success=True, warnings=("delegated",))
 
-    def run(self) -> ExecutionResult:
+    def run(
+        self,
+        *,
+        resume_checkpoint: CheckpointSnapshot | None = None,
+    ) -> ExecutionResult:
         """Record the run call and return the configured execution result."""
 
         self.run_calls += 1
+        self.resume_checkpoint = resume_checkpoint
         return self.result
 
 

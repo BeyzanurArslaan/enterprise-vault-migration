@@ -67,6 +67,7 @@ def test_application_contracts_are_immutable() -> None:
     assert start_command.request is request
     assert pause_command.job_id is not None
     assert resume_command.job_id is not None
+    assert resume_command.force is False
     assert cancel_command.job_id is not None
     assert status_query.job_id is not None
     assert checkpoint_query.job_id is not None

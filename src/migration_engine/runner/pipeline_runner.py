@@ -85,22 +85,40 @@ class PipelineRunner:
         self.current_step_context = step_context
         return execution_context
 
-    def run(self) -> ExecutionResult:
+    def run(
+        self,
+        *,
+        resume_checkpoint: CheckpointSnapshot | None = None,
+    ) -> ExecutionResult:
         """Execute the configured pipeline steps in order."""
 
-        execution_context = self.initialize()
         self.steps = self.step_registry.resolve()
+        if resume_checkpoint is None:
+            execution_context = self.initialize()
+            successful_steps = 0
+            failed_steps = 0
+            skipped_steps = 0
+            latest_metrics = self.metrics
+            current_context = execution_context
+            current_step_context = self._build_current_step_context(execution_context)
+            start_index = 0
+            errors: list[str] = []
+        else:
+            (
+                execution_context,
+                current_step_context,
+                successful_steps,
+                failed_steps,
+                skipped_steps,
+                latest_metrics,
+                errors,
+                start_index,
+            ) = self._build_resume_runtime(resume_checkpoint)
+            current_context = execution_context
 
-        successful_steps = 0
-        failed_steps = 0
-        skipped_steps = 0
-        latest_metrics = self.metrics
-        current_context = execution_context
-        current_step_context = self._build_current_step_context(execution_context)
         completed_steps: list[PipelineStep] = []
-        errors: list[str] = []
 
-        for step in self.steps:
+        for step in self.steps[start_index:]:
             step_state = self._step_state(step)
             if step_state is not None and self.state_machine.can_transition(step_state):
                 self.state_machine.transition_to(step_state)
@@ -611,6 +629,275 @@ class PipelineRunner:
         checkpoint = self._build_checkpoint_snapshot(context)
         self.checkpoint_service.save_checkpoint(checkpoint)
         return replace(context, checkpoint=checkpoint)
+
+    def _build_resume_runtime(
+        self,
+        resume_checkpoint: CheckpointSnapshot,
+    ) -> tuple[
+        ExecutionContext,
+        MigrationStepContext,
+        int,
+        int,
+        int,
+        MigrationMetrics | None,
+        list[str],
+        int,
+    ]:
+        """Restore the runtime state and replay completed stages from a checkpoint."""
+
+        resume_index = self._resolve_resume_index(resume_checkpoint)
+        resumed_state = MigrationState(resume_checkpoint.current_state)
+        started_at = resume_checkpoint.created_at
+        updated_at = resume_checkpoint.updated_at
+        restored_metrics = self._build_checkpoint_metrics(
+            checkpoint=resume_checkpoint,
+            started_at=started_at,
+            finished_at=updated_at,
+        )
+        restored_snapshot = self._build_checkpoint_progress_snapshot(
+            checkpoint=resume_checkpoint,
+            started_at=started_at,
+            updated_at=updated_at,
+        )
+        self.state_machine = MigrationStateMachine(current_state=resumed_state)
+        self.progress_tracker = ProgressTracker(
+            snapshot=restored_snapshot,
+            metrics=restored_metrics,
+            migration_state=resumed_state,
+        )
+        execution_context = ExecutionContext(
+            migration_id=resume_checkpoint.migration_job_id,
+            configuration=(
+                self.initial_context.execution_context.configuration
+                if self.initial_context is not None
+                else MigrationConfiguration()
+            ),
+            started_at=started_at,
+            current_step=resume_checkpoint.last_completed_step,
+            metrics=restored_metrics,
+            progress_tracker=self.progress_tracker,
+            state=resumed_state,
+            current_timestamp=updated_at,
+        )
+        self.progress_tracker.update_execution_context(execution_context)
+        self.progress_tracker.update_metrics(restored_metrics)
+        self.progress_tracker.update_migration_state(resumed_state)
+        current_context = execution_context
+        current_step_context = MigrationStepContext(
+            execution_context=execution_context,
+            progress_tracker=self.progress_tracker,
+            state_machine=self.state_machine,
+            execution_report=None,
+            checkpoint=resume_checkpoint,
+        )
+
+        successful_steps = 0
+        failed_steps = 0
+        skipped_steps = 0
+        latest_metrics: MigrationMetrics | None = restored_metrics
+        errors: list[str] = []
+
+        for step in self.steps[:resume_index]:
+            step_state = self._step_state(step)
+            if step_state is not None and self.state_machine.can_transition(step_state):
+                self.state_machine.transition_to(step_state)
+
+            current_context = self._advance_context(
+                current_context,
+                current_step=step.__class__.__name__,
+                current_state=self.state_machine.current_state,
+                current_timestamp=self._current_timestamp(),
+                metrics=latest_metrics,
+            )
+            current_step_context = replace(
+                current_step_context,
+                execution_context=current_context,
+                progress_tracker=self.progress_tracker or current_step_context.progress_tracker,
+                state_machine=self.state_machine,
+            )
+
+            step.prepare(current_context)
+            step_result_context: MigrationStepContext | None
+            if type(step) is UploadItemsStep:
+                step_result_context = step.reconstruct_upload(current_step_context)
+            else:
+                step_result_context = self._execute_step(step, current_step_context)
+                if step_result_context is None:
+                    step_report = step.execute(current_context)
+                    if step_report.metrics is not None:
+                        latest_metrics = step_report.metrics
+                    successful_steps += step_report.successful_steps
+                    failed_steps += step_report.failed_steps
+                    skipped_steps += step_report.skipped_steps
+                    step_timestamp = self._current_timestamp()
+                    current_context = self._advance_context(
+                        current_context,
+                        current_step=step.__class__.__name__,
+                        current_state=self.state_machine.current_state,
+                        current_timestamp=step_timestamp,
+                        metrics=latest_metrics,
+                    )
+                    resolved_metrics = self._resolve_metrics(
+                        latest_metrics=latest_metrics,
+                        started_at=execution_context.started_at,
+                        finished_at=step_timestamp,
+                    )
+                    self._sync_tracker(
+                        context=current_context,
+                        current_timestamp=step_timestamp,
+                        metrics=resolved_metrics,
+                        report=step_report,
+                    )
+                    current_step_context = replace(
+                        current_step_context,
+                        execution_context=current_context,
+                        progress_tracker=(
+                            self.progress_tracker or current_step_context.progress_tracker
+                        ),
+                        state_machine=self.state_machine,
+                        execution_report=step_report,
+                    )
+                    step.finalize(current_context)
+                    continue
+
+            if step_result_context is None:
+                message = f"{step.__class__.__name__} did not produce a reconstructed context"
+                raise RuntimeError(message)
+
+            current_step_context = step_result_context
+            current_context = step_result_context.execution_context
+            reconstructed_report: ExecutionReport | None = step_result_context.execution_report
+            if reconstructed_report is None:
+                message = f"{step.__class__.__name__} did not produce an execution report"
+                raise RuntimeError(message)
+
+            latest_metrics = (
+                step_result_context.execution_context.metrics
+                or reconstructed_report.metrics
+                or latest_metrics
+            )
+            successful_steps += reconstructed_report.successful_steps
+            failed_steps += reconstructed_report.failed_steps
+            skipped_steps += reconstructed_report.skipped_steps
+
+            step_timestamp = self._current_timestamp()
+            current_context = self._advance_context(
+                current_context,
+                current_step=step.__class__.__name__,
+                current_state=self.state_machine.current_state,
+                current_timestamp=step_timestamp,
+                metrics=latest_metrics,
+            )
+            resolved_metrics = self._resolve_metrics(
+                latest_metrics=latest_metrics,
+                started_at=execution_context.started_at,
+                finished_at=step_timestamp,
+            )
+            self._sync_tracker(
+                context=current_context,
+                current_timestamp=step_timestamp,
+                metrics=resolved_metrics,
+                report=reconstructed_report,
+            )
+            current_step_context = replace(
+                current_step_context,
+                execution_context=current_context,
+                progress_tracker=self.progress_tracker or current_step_context.progress_tracker,
+                state_machine=self.state_machine,
+                execution_report=reconstructed_report,
+            )
+            step.finalize(current_context)
+
+        self.current_step_context = current_step_context
+        self.execution_context = current_context
+        self.execution_report = current_step_context.execution_report
+        self.metrics = latest_metrics
+
+        return (
+            current_context,
+            current_step_context,
+            successful_steps,
+            failed_steps,
+            skipped_steps,
+            latest_metrics,
+            errors,
+            resume_index,
+        )
+
+    def _build_checkpoint_metrics(
+        self,
+        *,
+        checkpoint: CheckpointSnapshot,
+        started_at: datetime,
+        finished_at: datetime,
+    ) -> MigrationMetrics:
+        """Build metrics from a checkpoint snapshot for resume bookkeeping."""
+
+        duration_seconds = max((finished_at - started_at).total_seconds(), 0.0)
+        throughput = (
+            checkpoint.processed_items / duration_seconds if duration_seconds > 0.0 else 0.0
+        )
+        return MigrationMetrics(
+            duration_seconds=duration_seconds,
+            throughput_items_per_second=throughput,
+            average_item_size=0,
+            processed_bytes=0,
+            estimated_remaining_seconds=None,
+            peak_memory_usage_mb=None,
+            total_items=checkpoint.processed_items,
+            processed_items=checkpoint.processed_items,
+            successful_items=checkpoint.successful_items,
+            failed_items=checkpoint.failed_items,
+            skipped_items=checkpoint.skipped_items,
+            retried_items=0,
+            uploaded_items=checkpoint.uploaded_items,
+            verification_failures=checkpoint.verification_failures,
+            total_bytes=0,
+            started_at=started_at,
+            finished_at=finished_at,
+        )
+
+    def _build_checkpoint_progress_snapshot(
+        self,
+        *,
+        checkpoint: CheckpointSnapshot,
+        started_at: datetime,
+        updated_at: datetime,
+    ) -> ProgressSnapshot:
+        """Build a progress snapshot from checkpoint continuation data."""
+
+        return ProgressSnapshot(
+            total_items=checkpoint.processed_items,
+            processed_items=checkpoint.processed_items,
+            successful_items=checkpoint.successful_items,
+            failed_items=checkpoint.failed_items,
+            skipped_items=checkpoint.skipped_items,
+            current_archive=None,
+            current_mailbox=None,
+            current_item=checkpoint.last_processed_item_id,
+            started_at=started_at,
+            last_updated=updated_at,
+        )
+
+    def _resolve_resume_index(self, resume_checkpoint: CheckpointSnapshot) -> int:
+        """Resolve the next pipeline step index for a checkpoint resume."""
+
+        if resume_checkpoint.last_completed_step is None:
+            return 0
+
+        resume_index = self.step_registry.index_of(resume_checkpoint.last_completed_step)
+        if resume_index is None:
+            message = (
+                "Cannot resume migration because the checkpoint completed step "
+                f"{resume_checkpoint.last_completed_step!r} is not registered."
+            )
+            raise ValueError(message)
+
+        if resume_index >= len(self.steps):
+            message = "Cannot resume migration because the checkpoint is already final."
+            raise ValueError(message)
+
+        return resume_index + 1
 
     def _build_checkpoint_snapshot(self, context: MigrationStepContext) -> CheckpointSnapshot:
         """Create a checkpoint snapshot from the latest orchestration state."""

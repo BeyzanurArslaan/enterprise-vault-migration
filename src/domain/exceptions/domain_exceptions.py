@@ -35,6 +35,22 @@ class UnsupportedArchiveTypeError(DomainException):
     """Raised when an unsupported archive type is encountered."""
 
 
+class CheckpointError(DomainException):
+    """Raised when checkpoint state cannot support the requested workflow."""
+
+
+class CheckpointNotFoundError(CheckpointError):
+    """Raised when a migration checkpoint cannot be located."""
+
+
+class UnsupportedCheckpointVersionError(CheckpointError):
+    """Raised when a checkpoint schema version is not supported."""
+
+
+class NonResumableCheckpointError(CheckpointError):
+    """Raised when a checkpoint cannot safely resume execution."""
+
+
 __all__: list[str] = [
     "DomainException",
     "ValidationError",
@@ -43,4 +59,8 @@ __all__: list[str] = [
     "InvalidRetentionPeriodError",
     "MigrationStateError",
     "UnsupportedArchiveTypeError",
+    "CheckpointError",
+    "CheckpointNotFoundError",
+    "UnsupportedCheckpointVersionError",
+    "NonResumableCheckpointError",
 ]

@@ -58,6 +58,15 @@ class StepRegistry:
             )
         )
 
+    def index_of(self, step_name: str) -> int | None:
+        """Return the resolved index for a registered step name."""
+
+        for index, step in enumerate(self.resolve()):
+            if step.__class__.__name__ == step_name:
+                return index
+
+        return None
+
     def clear(self) -> None:
         """Clear the registered pipeline steps."""
 

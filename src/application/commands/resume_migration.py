@@ -14,7 +14,8 @@ from domain.value_objects.identifiers import MigrationJobId
 class ResumeMigrationCommand:
     """Immutable command used to resume a paused migration workflow."""
 
-    job_id: MigrationJobId
+    job_id: MigrationJobId | str
+    force: bool = False
 
 
 __all__: list[str] = ["ResumeMigrationCommand"]

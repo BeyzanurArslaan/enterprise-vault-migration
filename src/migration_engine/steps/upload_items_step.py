@@ -60,6 +60,21 @@ class UploadItemsStep(PipelineStep):
     def upload(self, context: MigrationStepContext) -> MigrationStepContext:
         """Upload transformed documents using the configured target port."""
 
+        return self._run_upload(context, perform_target_upload=True)
+
+    def reconstruct_upload(self, context: MigrationStepContext) -> MigrationStepContext:
+        """Rebuild an upload result from the target state without uploading again."""
+
+        return self._run_upload(context, perform_target_upload=False)
+
+    def _run_upload(
+        self,
+        context: MigrationStepContext,
+        *,
+        perform_target_upload: bool,
+    ) -> MigrationStepContext:
+        """Execute or reconstruct the upload stage for a transformed batch."""
+
         if context.transformation_result is None:
             message = "Upload requires transformation results"
             raise ValueError(message)
@@ -94,19 +109,47 @@ class UploadItemsStep(PipelineStep):
                 continue
 
             seen_source_identifiers.add(transformed_document.source_identifier)
-            try:
-                self._target_port.upload_archived_file(
-                    transformed_document.source_identifier,
-                    transformed_document,
+            if perform_target_upload:
+                try:
+                    self._target_port.upload_archived_file(
+                        transformed_document.source_identifier,
+                        transformed_document,
+                    )
+                except Exception as exc:  # pragma: no cover - exercised through tests
+                    failed_documents.append(transformed_document)
+                    item_results.append(
+                        replace(
+                            item_result,
+                            success=False,
+                            target_identifier=None,
+                            error_message=str(exc),
+                        )
+                    )
+                    continue
+
+                uploaded_documents.append(transformed_document)
+                uploaded_document_ids.append(transformed_document.source_identifier)
+                item_results.append(
+                    replace(
+                        item_result,
+                        success=True,
+                        target_identifier=transformed_document.source_identifier,
+                        error_message=None,
+                    )
                 )
-            except Exception as exc:  # pragma: no cover - exercised through tests
+                continue
+
+            target_document = self._target_port.get_uploaded_document(
+                transformed_document.source_identifier,
+            )
+            if target_document is None:
                 failed_documents.append(transformed_document)
                 item_results.append(
                     replace(
                         item_result,
                         success=False,
                         target_identifier=None,
-                        error_message=str(exc),
+                        error_message="Uploaded document not found in target storage",
                     )
                 )
                 continue
@@ -122,7 +165,8 @@ class UploadItemsStep(PipelineStep):
                 )
             )
 
-        self._target_port.finalize_job(context.execution_context.migration_id)
+        if perform_target_upload:
+            self._target_port.finalize_job(context.execution_context.migration_id)
         transformation_result = context.transformation_result
         upload_result = UploadBatchResult(
             uploaded_documents=tuple(uploaded_documents),

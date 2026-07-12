@@ -8,6 +8,7 @@ logic itself.
 
 from __future__ import annotations
 
+from .checkpoint import CheckpointSnapshot
 from .execution_result import ExecutionResult
 from .pipeline import MigrationPipeline
 from .runner import PipelineRunner, StepRegistry
@@ -36,10 +37,14 @@ class MigrationOrchestrator:
         if initial_context is not None:
             self.runner.initial_context = initial_context
 
-    def run(self) -> ExecutionResult:
+    def run(
+        self,
+        *,
+        resume_checkpoint: CheckpointSnapshot | None = None,
+    ) -> ExecutionResult:
         """Execute the configured migration workflow."""
 
-        return self.runner.run()
+        return self.runner.run(resume_checkpoint=resume_checkpoint)
 
 
 __all__: list[str] = ["MigrationOrchestrator"]
