@@ -12,20 +12,17 @@ from collections.abc import Sequence
 from dataclasses import replace
 from datetime import datetime
 
-from mock_ev.entities import (
-    Archive,
-    Attachment,
-    Mailbox,
-    MailItem,
-    VaultStore,
-)
-from mock_ev.generators import DatasetGenerator
-
 from ..contracts import (
     ExecutionContext,
     ExecutionReport,
     PipelineStep,
     ProgressSnapshot,
+    SourceArchive,
+    SourceAttachment,
+    SourceDatasetGenerator,
+    SourceMailbox,
+    SourceMailItem,
+    SourceVaultStore,
 )
 from ..discovery import ArchiveDiscoveryResult
 from ..extraction import ExtractionResult
@@ -34,8 +31,6 @@ from ..progress_tracker import ProgressTracker
 from ..state_machine import MigrationState, MigrationStateMachine
 from ..step_context import MigrationStepContext
 
-_DEFAULT_DATASET_SEED: int = 0
-
 
 class ExtractItemsStep(PipelineStep):
     """Extract mailboxes, mail items, and attachments from archives."""
@@ -43,13 +38,13 @@ class ExtractItemsStep(PipelineStep):
     def __init__(
         self,
         *,
-        vault_stores: Sequence[VaultStore] | None = None,
-        dataset_generator: DatasetGenerator | None = None,
+        vault_stores: Sequence[SourceVaultStore] | None = None,
+        dataset_generator: SourceDatasetGenerator | None = None,
     ) -> None:
         """Create an extraction step with optional deterministic data overrides."""
 
         self._vault_stores = tuple(vault_stores) if vault_stores is not None else None
-        self._dataset_generator = dataset_generator or DatasetGenerator(seed=_DEFAULT_DATASET_SEED)
+        self._dataset_generator = dataset_generator
 
     def prepare(self, context: ExecutionContext) -> None:
         """Prepare item extraction for the current migration context."""
@@ -92,9 +87,9 @@ class ExtractItemsStep(PipelineStep):
             selected_vault_stores,
             context.discovery_result.archive_names,
         )
-        extracted_mailboxes: list[Mailbox] = []
-        extracted_mail_items: list[MailItem] = []
-        extracted_attachments: list[Attachment] = []
+        extracted_mailboxes: list[SourceMailbox] = []
+        extracted_mail_items: list[SourceMailItem] = []
+        extracted_attachments: list[SourceAttachment] = []
         current_archive_name: str | None = None
         current_mailbox_address: str | None = None
         current_item_subject: str | None = None
@@ -204,8 +199,8 @@ class ExtractItemsStep(PipelineStep):
 
     def _resolve_vault_stores(
         self,
-        vault_stores: Sequence[VaultStore] | None,
-    ) -> tuple[VaultStore, ...]:
+        vault_stores: Sequence[SourceVaultStore] | None,
+    ) -> tuple[SourceVaultStore, ...]:
         """Return the source vault stores to inspect during extraction."""
 
         if vault_stores is not None:
@@ -213,11 +208,14 @@ class ExtractItemsStep(PipelineStep):
         if self._vault_stores is not None:
             return self._vault_stores
 
-        return tuple(self._dataset_generator.generate_small())
+        if self._dataset_generator is not None:
+            return tuple(self._dataset_generator.generate_small())
+
+        return ()
 
     def _build_discovery_result(
         self,
-        vault_stores: Sequence[VaultStore],
+        vault_stores: Sequence[SourceVaultStore],
     ) -> ArchiveDiscoveryResult:
         """Create a structural summary of the source vault stores."""
 
@@ -232,9 +230,9 @@ class ExtractItemsStep(PipelineStep):
 
     def _select_vault_stores(
         self,
-        vault_stores: Sequence[VaultStore],
+        vault_stores: Sequence[SourceVaultStore],
         vault_store_names: Sequence[str],
-    ) -> tuple[VaultStore, ...]:
+    ) -> tuple[SourceVaultStore, ...]:
         """Select vault stores in the order declared by the discovery result."""
 
         if not vault_store_names:
@@ -248,15 +246,15 @@ class ExtractItemsStep(PipelineStep):
 
     def _select_archives(
         self,
-        vault_stores: Sequence[VaultStore],
+        vault_stores: Sequence[SourceVaultStore],
         archive_names: Sequence[str],
-    ) -> tuple[Archive, ...]:
+    ) -> tuple[SourceArchive, ...]:
         """Select archives from the discovered vault stores."""
 
         if not archive_names:
             return tuple(archive for store in vault_stores for archive in store.archives)
 
-        selected_archives: list[Archive] = []
+        selected_archives: list[SourceArchive] = []
         for vault_store in vault_stores:
             for archive in vault_store.archives:
                 if archive.name in archive_names:

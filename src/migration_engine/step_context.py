@@ -9,9 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from mock_ev.entities import VaultStore
-
-from .contracts import ExecutionContext, ExecutionReport
+from .contracts import ExecutionContext, ExecutionReport, SourceVaultStore
 from .discovery import ArchiveDiscoveryResult
 from .execution_result import ExecutionResult
 from .extraction import ExtractionResult
@@ -31,7 +29,7 @@ class MigrationStepContext:
     state_machine: MigrationStateMachine | None = None
     execution_report: ExecutionReport | None = None
     discovery_result: ArchiveDiscoveryResult | None = None
-    vault_stores: tuple[VaultStore, ...] | None = None
+    vault_stores: tuple[SourceVaultStore, ...] | None = None
     extraction_result: ExtractionResult | None = None
     transformation_result: TransformationResult | None = None
     upload_result: UploadBatchResult | None = None

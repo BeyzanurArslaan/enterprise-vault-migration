@@ -11,10 +11,26 @@ from .execution_context import ExecutionContext
 from .execution_report import ExecutionReport
 from .pipeline_step import PipelineStep
 from .progress_snapshot import ProgressSnapshot
+from .source_models import (
+    SourceArchive,
+    SourceAttachment,
+    SourceDatasetGenerator,
+    SourceMailbox,
+    SourceMailItem,
+    SourceRetentionPolicy,
+    SourceVaultStore,
+)
 
 __all__: list[str] = [
     "ExecutionContext",
     "ExecutionReport",
     "PipelineStep",
     "ProgressSnapshot",
+    "SourceArchive",
+    "SourceAttachment",
+    "SourceDatasetGenerator",
+    "SourceMailbox",
+    "SourceMailItem",
+    "SourceRetentionPolicy",
+    "SourceVaultStore",
 ]

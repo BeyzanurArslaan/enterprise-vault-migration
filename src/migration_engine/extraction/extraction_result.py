@@ -8,17 +8,17 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from mock_ev.entities import Archive, Attachment, Mailbox, MailItem
+from ..contracts import SourceArchive, SourceAttachment, SourceMailbox, SourceMailItem
 
 
 @dataclass(slots=True, frozen=True, kw_only=True)
 class ExtractionResult:
     """Immutable summary of extracted Enterprise Vault content."""
 
-    discovered_archives: tuple[Archive, ...]
-    extracted_mailboxes: tuple[Mailbox, ...]
-    extracted_mail_items: tuple[MailItem, ...]
-    extracted_attachments: tuple[Attachment, ...]
+    discovered_archives: tuple[SourceArchive, ...]
+    extracted_mailboxes: tuple[SourceMailbox, ...]
+    extracted_mail_items: tuple[SourceMailItem, ...]
+    extracted_attachments: tuple[SourceAttachment, ...]
     total_mailboxes: int
     total_items: int
     total_attachments: int

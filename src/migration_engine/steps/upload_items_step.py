@@ -122,6 +122,7 @@ class UploadItemsStep(PipelineStep):
                 )
             )
 
+        self._target_port.finalize_job(context.execution_context.migration_id)
         transformation_result = context.transformation_result
         upload_result = UploadBatchResult(
             uploaded_documents=tuple(uploaded_documents),

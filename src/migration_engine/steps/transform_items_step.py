@@ -12,10 +12,18 @@ from collections.abc import Sequence
 from dataclasses import replace
 from datetime import datetime
 
-from mock_ev.entities import Archive, Attachment, Mailbox, MailItem, VaultStore
-from mock_ev.generators import DatasetGenerator
-
-from ..contracts import ExecutionContext, ExecutionReport, PipelineStep, ProgressSnapshot
+from ..contracts import (
+    ExecutionContext,
+    ExecutionReport,
+    PipelineStep,
+    ProgressSnapshot,
+    SourceArchive,
+    SourceAttachment,
+    SourceDatasetGenerator,
+    SourceMailbox,
+    SourceMailItem,
+    SourceVaultStore,
+)
 from ..discovery import ArchiveDiscoveryResult
 from ..extraction import ExtractionResult
 from ..metrics import MigrationMetrics
@@ -24,8 +32,6 @@ from ..state_machine import MigrationState, MigrationStateMachine
 from ..step_context import MigrationStepContext
 from ..transformation import TransformationResult, TransformedDocument
 
-_DEFAULT_DATASET_SEED: int = 0
-
 
 class TransformItemsStep(PipelineStep):
     """Transform extracted Enterprise Vault items into target-neutral documents."""
@@ -33,13 +39,13 @@ class TransformItemsStep(PipelineStep):
     def __init__(
         self,
         *,
-        vault_stores: Sequence[VaultStore] | None = None,
-        dataset_generator: DatasetGenerator | None = None,
+        vault_stores: Sequence[SourceVaultStore] | None = None,
+        dataset_generator: SourceDatasetGenerator | None = None,
     ) -> None:
         """Create a transformation step with optional deterministic overrides."""
 
         self._vault_stores = tuple(vault_stores) if vault_stores is not None else None
-        self._dataset_generator = dataset_generator or DatasetGenerator(seed=_DEFAULT_DATASET_SEED)
+        self._dataset_generator = dataset_generator
 
     def prepare(self, context: ExecutionContext) -> None:
         """Prepare item transformation for the current migration context."""
@@ -201,20 +207,22 @@ class TransformItemsStep(PipelineStep):
 
     def _resolve_vault_stores(
         self,
-        vault_stores: Sequence[VaultStore] | None,
-    ) -> tuple[VaultStore, ...]:
+        vault_stores: Sequence[SourceVaultStore] | None,
+    ) -> tuple[SourceVaultStore, ...]:
         """Return the source vault stores to inspect during transformation."""
 
         if vault_stores is not None:
             return tuple(vault_stores)
         if self._vault_stores is not None:
             return self._vault_stores
+        if self._dataset_generator is None:
+            return ()
 
         return tuple(self._dataset_generator.generate_small())
 
     def _build_discovery_result(
         self,
-        vault_stores: Sequence[VaultStore],
+        vault_stores: Sequence[SourceVaultStore],
     ) -> ArchiveDiscoveryResult:
         """Create a structural summary of the source vault stores."""
 
@@ -229,14 +237,14 @@ class TransformItemsStep(PipelineStep):
 
     def _build_extraction_result(
         self,
-        vault_stores: Sequence[VaultStore],
+        vault_stores: Sequence[SourceVaultStore],
     ) -> ExtractionResult:
         """Create a structural extraction summary for the source vault stores."""
 
-        discovered_archives: list[Archive] = []
-        extracted_mailboxes: list[Mailbox] = []
-        extracted_mail_items: list[MailItem] = []
-        extracted_attachments: list[Attachment] = []
+        discovered_archives: list[SourceArchive] = []
+        extracted_mailboxes: list[SourceMailbox] = []
+        extracted_mail_items: list[SourceMailItem] = []
+        extracted_attachments: list[SourceAttachment] = []
         for vault_store in vault_stores:
             for archive in vault_store.archives:
                 discovered_archives.append(archive)
@@ -258,9 +266,9 @@ class TransformItemsStep(PipelineStep):
 
     def _select_vault_stores(
         self,
-        vault_stores: Sequence[VaultStore],
+        vault_stores: Sequence[SourceVaultStore],
         vault_store_names: Sequence[str],
-    ) -> tuple[VaultStore, ...]:
+    ) -> tuple[SourceVaultStore, ...]:
         """Select vault stores in the order declared by discovery."""
 
         if not vault_store_names:
@@ -274,11 +282,11 @@ class TransformItemsStep(PipelineStep):
 
     def _iter_mail_item_contexts(
         self,
-        vault_stores: Sequence[VaultStore],
-    ) -> list[tuple[Archive, Mailbox]]:
+        vault_stores: Sequence[SourceVaultStore],
+    ) -> list[tuple[SourceArchive, SourceMailbox]]:
         """Collect archive and mailbox context for each mail item."""
 
-        mail_item_contexts: list[tuple[Archive, Mailbox]] = []
+        mail_item_contexts: list[tuple[SourceArchive, SourceMailbox]] = []
         for vault_store in vault_stores:
             for archive in vault_store.archives:
                 for mailbox in archive.mailboxes:
@@ -291,7 +299,7 @@ class TransformItemsStep(PipelineStep):
         *,
         archive_name: str,
         mailbox_address: str,
-        mail_item: MailItem,
+        mail_item: SourceMailItem,
     ) -> TransformedDocument:
         """Transform a mail item into a deterministic neutral document."""
 

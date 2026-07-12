@@ -13,6 +13,7 @@ from migration_engine.state_machine import MigrationState, MigrationStateMachine
 from migration_engine.step_context import MigrationStepContext
 from migration_engine.steps import DiscoverArchivesStep
 from mock_ev.entities import Archive, VaultStore
+from mock_ev.generators import DatasetGenerator
 
 
 def _build_vault_store(name: str, archive_names: tuple[str, ...]) -> VaultStore:
@@ -215,8 +216,11 @@ def test_discover_archives_step_is_deterministic_for_default_generation() -> Non
         state=MigrationState.INITIALIZING,
     )
 
-    first_result = DiscoverArchivesStep().discover(first_context)
-    second_result = DiscoverArchivesStep().discover(second_context)
+    first_step = DiscoverArchivesStep(dataset_generator=DatasetGenerator(seed=0))
+    second_step = DiscoverArchivesStep(dataset_generator=DatasetGenerator(seed=0))
+
+    first_result = first_step.discover(first_context)
+    second_result = second_step.discover(second_context)
 
     assert first_result.discovery_result == second_result.discovery_result
     assert first_result.execution_report == second_result.execution_report

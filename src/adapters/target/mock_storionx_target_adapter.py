@@ -92,7 +92,7 @@ class MockStorionXTargetAdapter(StorionXTargetPort):
             return job_id
 
         return self.upload_service.finalize_upload(
-            completed_at=datetime.now(tz=UTC),
+            completed_at=active_session.started_at,
         )
 
     def _ensure_session(self) -> UploadSession:

@@ -11,17 +11,19 @@ from collections.abc import Sequence
 from dataclasses import replace
 from datetime import datetime
 
-from mock_ev.entities import VaultStore
-from mock_ev.generators import DatasetGenerator
-
-from ..contracts import ExecutionContext, ExecutionReport, PipelineStep, ProgressSnapshot
+from ..contracts import (
+    ExecutionContext,
+    ExecutionReport,
+    PipelineStep,
+    ProgressSnapshot,
+    SourceDatasetGenerator,
+    SourceVaultStore,
+)
 from ..discovery import ArchiveDiscoveryResult
 from ..metrics import MigrationMetrics
 from ..progress_tracker import ProgressTracker
 from ..state_machine import MigrationState, MigrationStateMachine
 from ..step_context import MigrationStepContext
-
-_DEFAULT_DATASET_SEED: int = 0
 
 
 class DiscoverArchivesStep(PipelineStep):
@@ -30,13 +32,13 @@ class DiscoverArchivesStep(PipelineStep):
     def __init__(
         self,
         *,
-        vault_stores: Sequence[VaultStore] | None = None,
-        dataset_generator: DatasetGenerator | None = None,
+        vault_stores: Sequence[SourceVaultStore] | None = None,
+        dataset_generator: SourceDatasetGenerator | None = None,
     ) -> None:
         """Create a discovery step with optional deterministic data overrides."""
 
         self._vault_stores = tuple(vault_stores) if vault_stores is not None else None
-        self._dataset_generator = dataset_generator or DatasetGenerator(seed=_DEFAULT_DATASET_SEED)
+        self._dataset_generator = dataset_generator
 
     def prepare(self, context: ExecutionContext) -> None:
         """Prepare archive discovery for the current migration context."""
@@ -143,17 +145,20 @@ class DiscoverArchivesStep(PipelineStep):
             execution_report=None,
         )
 
-    def _resolve_vault_stores(self) -> tuple[VaultStore, ...]:
+    def _resolve_vault_stores(self) -> tuple[SourceVaultStore, ...]:
         """Return the vault stores that should be inspected for discovery."""
 
         if self._vault_stores is not None:
             return self._vault_stores
 
-        return tuple(self._dataset_generator.generate_small())
+        if self._dataset_generator is not None:
+            return tuple(self._dataset_generator.generate_small())
+
+        return ()
 
     def _build_discovery_result(
         self,
-        vault_stores: Sequence[VaultStore],
+        vault_stores: Sequence[SourceVaultStore],
     ) -> ArchiveDiscoveryResult:
         """Create a lightweight summary of discovered vault stores and archives."""
 
