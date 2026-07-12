@@ -1,8 +1,7 @@
 """Migration engine runner package.
 
 This package defines the execution layer responsible for coordinating pipeline
-steps. The current sprint establishes the runner and registry skeletons only,
-without implementing execution behavior.
+steps, execution state, progress tracking, and final reporting.
 """
 
 from __future__ import annotations
