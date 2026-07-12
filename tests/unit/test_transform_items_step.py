@@ -13,16 +13,8 @@ from migration_engine.progress_tracker import ProgressTracker
 from migration_engine.state_machine import MigrationState, MigrationStateMachine
 from migration_engine.step_context import MigrationStepContext
 from migration_engine.steps import TransformItemsStep
-from migration_engine.transformation import TransformationResult
-from mock_ev.entities import (
-    Archive,
-    Attachment,
-    Mailbox,
-    MailItem,
-    RetentionPolicy,
-    VaultStore,
-)
-from mock_storionx.entities import Document, Metadata
+from migration_engine.transformation import TransformationResult, TransformedDocument
+from mock_ev.entities import Archive, Attachment, Mailbox, MailItem, RetentionPolicy, VaultStore
 
 
 def _build_retention_policy() -> RetentionPolicy:
@@ -289,81 +281,84 @@ def test_transform_items_step_transforms_items_and_updates_shared_state() -> Non
     updated_context = step.transform(context)
 
     expected_documents = (
-        Document(
-            id="message-A1-1",
+        TransformedDocument(
+            source_identifier="message-A1-1",
+            archive_name="Archive A1",
+            mailbox_address="alice@example.com",
+            subject="A1-1",
             filename="A1-1.eml",
             content_type="message/rfc822",
-            size=110,
+            size_bytes=110,
             checksum="message-A1-1",
-            metadata=Metadata(
-                author="sender@example.com",
-                department="Example",
-                retention_policy="Standard",
-                tags=["Archive A1", "alice@example.com", "conversation-A1-1"],
-                custom_properties={
-                    "sender": "sender@example.com",
-                    "recipients": "alice@target.test",
-                    "cc_recipients": "manager@example.com",
-                    "bcc_recipients": "",
-                    "subject": "A1-1",
-                    "internet_message_id": "message-A1-1",
-                    "attachment_count": "1",
-                    "attachment_filenames": "A1-1-1.txt",
-                    "attachment_checksums": "checksum-A1-1-1.txt",
-                },
+            sender="sender@example.com",
+            recipients=("alice@target.test",),
+            cc_recipients=("manager@example.com",),
+            bcc_recipients=(),
+            retention_policy="Standard",
+            department="Example",
+            tags=("Archive A1", "alice@example.com", "conversation-A1-1"),
+            custom_properties=(
+                ("internet_message_id", "message-A1-1"),
+                ("message_size", "100"),
+                ("attachment_count", "1"),
             ),
+            attachment_filenames=("A1-1-1.txt",),
+            attachment_checksums=("checksum-A1-1-1.txt",),
+            attachment_sizes=(10,),
             created_at=started_at,
             modified_at=started_at,
         ),
-        Document(
-            id="message-A1-2",
+        TransformedDocument(
+            source_identifier="message-A1-2",
+            archive_name="Archive A1",
+            mailbox_address="alice@example.com",
+            subject="A1-2",
             filename="A1-2.eml",
             content_type="message/rfc822",
-            size=120,
+            size_bytes=120,
             checksum="message-A1-2",
-            metadata=Metadata(
-                author="sender@example.com",
-                department="Example",
-                retention_policy="Standard",
-                tags=["Archive A1", "alice@example.com", "conversation-A1-2"],
-                custom_properties={
-                    "sender": "sender@example.com",
-                    "recipients": "",
-                    "cc_recipients": "",
-                    "bcc_recipients": "",
-                    "subject": "A1-2",
-                    "internet_message_id": "message-A1-2",
-                    "attachment_count": "0",
-                    "attachment_filenames": "",
-                    "attachment_checksums": "",
-                },
+            sender="sender@example.com",
+            recipients=(),
+            cc_recipients=(),
+            bcc_recipients=(),
+            retention_policy="Standard",
+            department="Example",
+            tags=("Archive A1", "alice@example.com", "conversation-A1-2"),
+            custom_properties=(
+                ("internet_message_id", "message-A1-2"),
+                ("message_size", "120"),
+                ("attachment_count", "0"),
             ),
+            attachment_filenames=(),
+            attachment_checksums=(),
+            attachment_sizes=(),
             created_at=started_at,
             modified_at=started_at,
         ),
-        Document(
-            id="message-B1-1",
+        TransformedDocument(
+            source_identifier="message-B1-1",
+            archive_name="Archive B1",
+            mailbox_address="bob@example.com",
+            subject="B1-1",
             filename="B1-1.eml",
             content_type="message/rfc822",
-            size=180,
+            size_bytes=180,
             checksum="message-B1-1",
-            metadata=Metadata(
-                author="sender@example.com",
-                department="Example",
-                retention_policy="Standard",
-                tags=["Archive B1", "bob@example.com", "conversation-B1-1"],
-                custom_properties={
-                    "sender": "sender@example.com",
-                    "recipients": "bob@target.test",
-                    "cc_recipients": "",
-                    "bcc_recipients": "audit@example.com",
-                    "subject": "B1-1",
-                    "internet_message_id": "message-B1-1",
-                    "attachment_count": "2",
-                    "attachment_filenames": "B1-1-1.txt,B1-1-2.txt",
-                    "attachment_checksums": "checksum-B1-1-1.txt,checksum-B1-1-2.txt",
-                },
+            sender="sender@example.com",
+            recipients=("bob@target.test",),
+            cc_recipients=(),
+            bcc_recipients=("audit@example.com",),
+            retention_policy="Standard",
+            department="Example",
+            tags=("Archive B1", "bob@example.com", "conversation-B1-1"),
+            custom_properties=(
+                ("internet_message_id", "message-B1-1"),
+                ("message_size", "130"),
+                ("attachment_count", "2"),
             ),
+            attachment_filenames=("B1-1-1.txt", "B1-1-2.txt"),
+            attachment_checksums=("checksum-B1-1-1.txt", "checksum-B1-1-2.txt"),
+            attachment_sizes=(20, 30),
             created_at=started_at,
             modified_at=started_at,
         ),

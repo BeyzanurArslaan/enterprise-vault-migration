@@ -17,6 +17,7 @@ from .extraction import ExtractionResult
 from .progress_tracker import ProgressTracker
 from .state_machine import MigrationStateMachine
 from .transformation import TransformationResult
+from .upload import UploadBatchResult
 
 
 @dataclass(slots=True, frozen=True, kw_only=True)
@@ -31,6 +32,7 @@ class MigrationStepContext:
     vault_stores: tuple[VaultStore, ...] | None = None
     extraction_result: ExtractionResult | None = None
     transformation_result: TransformationResult | None = None
+    upload_result: UploadBatchResult | None = None
 
 
 __all__: list[str] = ["MigrationStepContext"]

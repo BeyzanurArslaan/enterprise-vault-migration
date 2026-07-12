@@ -1,9 +1,9 @@
 """Transform items pipeline step module.
 
 This module defines the migration step responsible for transforming extracted
-Enterprise Vault items into mock storionX document structures. The step keeps
+Enterprise Vault items into target-neutral document structures. The step keeps
 the orchestration layer deterministic and does not perform any persistence or
-business-rule enforcement.
+target-specific mapping.
 """
 
 from __future__ import annotations
@@ -14,7 +14,6 @@ from datetime import datetime
 
 from mock_ev.entities import Archive, Attachment, Mailbox, MailItem, VaultStore
 from mock_ev.generators import DatasetGenerator
-from mock_storionx.entities import Document, Metadata
 
 from ..contracts import ExecutionContext, ExecutionReport, PipelineStep, ProgressSnapshot
 from ..discovery import ArchiveDiscoveryResult
@@ -23,13 +22,13 @@ from ..metrics import MigrationMetrics
 from ..progress_tracker import ProgressTracker
 from ..state_machine import MigrationState, MigrationStateMachine
 from ..step_context import MigrationStepContext
-from ..transformation import TransformationResult
+from ..transformation import TransformationResult, TransformedDocument
 
 _DEFAULT_DATASET_SEED: int = 0
 
 
 class TransformItemsStep(PipelineStep):
-    """Transform extracted Enterprise Vault items into target documents."""
+    """Transform extracted Enterprise Vault items into target-neutral documents."""
 
     def __init__(
         self,
@@ -68,7 +67,7 @@ class TransformItemsStep(PipelineStep):
         return None
 
     def transform(self, context: MigrationStepContext) -> MigrationStepContext:
-        """Transform extracted items into mock storionX document structures."""
+        """Transform extracted items into target-neutral document structures."""
 
         if context.extraction_result is None:
             message = "Transformation requires extraction results"
@@ -79,7 +78,7 @@ class TransformItemsStep(PipelineStep):
             source_vault_stores,
             context.discovery_result.vault_store_names if context.discovery_result else (),
         )
-        transformed_documents: list[Document] = []
+        transformed_documents: list[TransformedDocument] = []
         current_archive_name: str | None = None
         current_mailbox_address: str | None = None
         current_item_name: str | None = None
@@ -293,39 +292,39 @@ class TransformItemsStep(PipelineStep):
         archive_name: str,
         mailbox_address: str,
         mail_item: MailItem,
-    ) -> Document:
-        """Transform a mail item into a deterministic mock storionX document."""
+    ) -> TransformedDocument:
+        """Transform a mail item into a deterministic neutral document."""
 
-        attachment_bytes = sum(attachment.size_bytes for attachment in mail_item.attachments)
+        attachment_sizes = tuple(attachment.size_bytes for attachment in mail_item.attachments)
+        attachment_filenames = tuple(attachment.filename for attachment in mail_item.attachments)
+        attachment_checksums = tuple(attachment.checksum for attachment in mail_item.attachments)
+        attachment_bytes = sum(attachment_sizes)
         document_size = mail_item.message_size + attachment_bytes
-        metadata = Metadata(
-            author=mail_item.sender,
-            department=self._derive_department(mailbox_address),
-            retention_policy=mail_item.retention_policy.name,
-            tags=[archive_name, mailbox_address, mail_item.conversation_id],
-            custom_properties={
-                "sender": mail_item.sender,
-                "recipients": ",".join(mail_item.recipients),
-                "cc_recipients": ",".join(mail_item.cc_recipients),
-                "bcc_recipients": ",".join(mail_item.bcc_recipients),
-                "subject": mail_item.subject,
-                "internet_message_id": mail_item.internet_message_id,
-                "attachment_count": str(len(mail_item.attachments)),
-                "attachment_filenames": ",".join(
-                    attachment.filename for attachment in mail_item.attachments
-                ),
-                "attachment_checksums": ",".join(
-                    attachment.checksum for attachment in mail_item.attachments
-                ),
-            },
+        metadata_properties = (
+            ("internet_message_id", mail_item.internet_message_id),
+            ("message_size", str(mail_item.message_size)),
+            ("attachment_count", str(len(mail_item.attachments))),
         )
-        return Document(
-            id=mail_item.internet_message_id,
+        return TransformedDocument(
+            source_identifier=mail_item.internet_message_id,
+            archive_name=archive_name,
+            mailbox_address=mailbox_address,
+            subject=mail_item.subject,
             filename=f"{mail_item.subject}.eml",
             content_type="message/rfc822",
-            size=document_size,
+            size_bytes=document_size,
             checksum=mail_item.internet_message_id,
-            metadata=metadata,
+            sender=mail_item.sender,
+            recipients=tuple(mail_item.recipients),
+            cc_recipients=tuple(mail_item.cc_recipients),
+            bcc_recipients=tuple(mail_item.bcc_recipients),
+            retention_policy=mail_item.retention_policy.name,
+            department=self._derive_department(mailbox_address),
+            tags=(archive_name, mailbox_address, mail_item.conversation_id),
+            custom_properties=metadata_properties,
+            attachment_filenames=attachment_filenames,
+            attachment_checksums=attachment_checksums,
+            attachment_sizes=attachment_sizes,
             created_at=mail_item.sent_at,
             modified_at=mail_item.modified_at,
         )
@@ -342,7 +341,7 @@ class TransformItemsStep(PipelineStep):
     def _build_snapshot(
         self,
         *,
-        transformed_documents: Sequence[Document],
+        transformed_documents: Sequence[TransformedDocument],
         skipped_items: int,
         failed_items: int,
         started_at: datetime,
@@ -373,7 +372,7 @@ class TransformItemsStep(PipelineStep):
         self,
         *,
         metrics: MigrationMetrics | None,
-        transformed_documents: Sequence[Document],
+        transformed_documents: Sequence[TransformedDocument],
         skipped_items: int,
         failed_items: int,
         started_at: datetime,
@@ -383,7 +382,7 @@ class TransformItemsStep(PipelineStep):
 
         duration_seconds = max((completed_at - started_at).total_seconds(), 0.0)
         processed_items = len(transformed_documents)
-        processed_bytes = sum(document.size for document in transformed_documents)
+        processed_bytes = sum(document.size_bytes for document in transformed_documents)
         throughput = processed_items / duration_seconds if duration_seconds > 0.0 else 0.0
         average_item_size = processed_bytes // processed_items if processed_items > 0 else 0
 

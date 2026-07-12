@@ -7,5 +7,6 @@ engine orchestration layer.
 from __future__ import annotations
 
 from .transformation_result import TransformationResult
+from .transformed_document import TransformedDocument
 
-__all__: list[str] = ["TransformationResult"]
+__all__: list[str] = ["TransformedDocument", "TransformationResult"]

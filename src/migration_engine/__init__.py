@@ -21,7 +21,8 @@ from .progress_tracker import ProgressTracker
 from .runner import PipelineRunner, StepRegistry
 from .state_machine import MigrationState, MigrationStateMachine
 from .step_context import MigrationStepContext
-from .transformation import TransformationResult
+from .transformation import TransformationResult, TransformedDocument
+from .upload import UploadBatchResult
 
 __all__: list[str] = [
     "ExecutionResult",
@@ -38,6 +39,8 @@ __all__: list[str] = [
     "MigrationState",
     "MigrationStateMachine",
     "ProgressTracker",
+    "TransformedDocument",
+    "UploadBatchResult",
     "StepRegistry",
     "TransformationResult",
 ]

@@ -40,6 +40,12 @@ class UploadService:
         self._active_session = upload_session
         return upload_session
 
+    @property
+    def active_session(self) -> UploadSession | None:
+        """Return the current active upload session when one exists."""
+
+        return self._active_session
+
     def upload_document(
         self,
         *,
