@@ -5,8 +5,14 @@ This package groups the API placeholders used by the target platform scaffold.
 
 from __future__ import annotations
 
+from .health_api import HealthAPI
+from .metadata_api import MetadataAPI
+from .search_api import SearchAPI
+from .upload_api import UploadAPI
+
 __all__: list[str] = [
-    "upload_api",
-    "search_api",
-    "health_api",
+    "HealthAPI",
+    "MetadataAPI",
+    "SearchAPI",
+    "UploadAPI",
 ]
