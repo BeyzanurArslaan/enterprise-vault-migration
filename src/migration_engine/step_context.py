@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from .checkpoint import CheckpointSnapshot
 from .contracts import ExecutionContext, ExecutionReport, SourceVaultStore
 from .discovery import ArchiveDiscoveryResult
 from .execution_result import ExecutionResult
@@ -30,6 +31,7 @@ class MigrationStepContext:
     execution_report: ExecutionReport | None = None
     discovery_result: ArchiveDiscoveryResult | None = None
     vault_stores: tuple[SourceVaultStore, ...] | None = None
+    checkpoint: CheckpointSnapshot | None = None
     extraction_result: ExtractionResult | None = None
     transformation_result: TransformationResult | None = None
     upload_result: UploadBatchResult | None = None

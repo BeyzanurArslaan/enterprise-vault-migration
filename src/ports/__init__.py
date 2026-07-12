@@ -6,7 +6,12 @@ its surrounding application layers.
 
 from __future__ import annotations
 
+from .checkpoint_repository_port import CheckpointRepositoryPort
 from .enterprise_vault_source_port import EnterpriseVaultSourcePort
 from .storionx_target_port import StorionXTargetPort
 
-__all__: list[str] = ["EnterpriseVaultSourcePort", "StorionXTargetPort"]
+__all__: list[str] = [
+    "CheckpointRepositoryPort",
+    "EnterpriseVaultSourcePort",
+    "StorionXTargetPort",
+]
