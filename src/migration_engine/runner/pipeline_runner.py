@@ -1,7 +1,8 @@
 """Pipeline runner module for the migration engine execution layer.
 
 This module defines the runner that coordinates registered pipeline steps with
-execution state, progress tracking, metrics, and final reporting.
+execution state, progress tracking, metrics, checkpoint persistence, and final
+reporting.
 """
 
 from __future__ import annotations
@@ -11,6 +12,10 @@ from dataclasses import replace
 from datetime import UTC, datetime
 from uuid import uuid4
 
+from application.services import CheckpointService
+from ports.identifier_generator_port import IdentifierGeneratorPort
+
+from ..checkpoint import CheckpointSnapshot
 from ..configuration import MigrationConfiguration
 from ..context import MigrationContext
 from ..contracts import ExecutionContext, ExecutionReport, PipelineStep, ProgressSnapshot
@@ -32,7 +37,7 @@ from .step_registry import StepRegistry
 
 
 class PipelineRunner:
-    """Coordinate pipeline steps, execution state, and execution outcomes."""
+    """Coordinate pipeline steps, execution state, checkpoints, and outcomes."""
 
     def __init__(
         self,
@@ -42,6 +47,8 @@ class PipelineRunner:
         step_registry: StepRegistry | None = None,
         initial_context: MigrationStepContext | None = None,
         context: MigrationContext | None = None,
+        checkpoint_service: CheckpointService | None = None,
+        identifier_generator: IdentifierGeneratorPort | None = None,
     ) -> None:
         """Create a runner configured with ordered pipeline steps."""
 
@@ -62,6 +69,8 @@ class PipelineRunner:
         self.execution_result: ExecutionResult | None = None
         self.metrics: MigrationMetrics | None = None
         self.current_step_context: MigrationStepContext | None = initial_context
+        self.checkpoint_service = checkpoint_service
+        self.identifier_generator = identifier_generator
 
     def initialize(self) -> ExecutionContext:
         """Prepare the runner before pipeline execution begins."""
@@ -166,7 +175,18 @@ class PipelineRunner:
                     report=step_report,
                 )
 
+                current_step_context = replace(
+                    current_step_context,
+                    execution_context=current_context,
+                    progress_tracker=(
+                        self.progress_tracker or current_step_context.progress_tracker
+                    ),
+                    state_machine=self.state_machine,
+                    execution_report=step_report,
+                )
                 step.finalize(current_context)
+                current_step_context = self._save_checkpoint(current_step_context)
+                self.current_step_context = current_step_context
                 completed_steps.append(step)
             except Exception as exc:
                 errors.append(str(exc))
@@ -360,7 +380,7 @@ class PipelineRunner:
             migration_state=self.state_machine.current_state,
         )
         execution_context = ExecutionContext(
-            migration_id=f"migration-{uuid4().hex}",
+            migration_id=self._resolve_migration_id(),
             configuration=MigrationConfiguration(),
             started_at=started_at,
             current_step=None,
@@ -581,6 +601,94 @@ class PipelineRunner:
         """Return the current UTC timestamp for orchestration bookkeeping."""
 
         return datetime.now(tz=UTC)
+
+    def _save_checkpoint(self, context: MigrationStepContext) -> MigrationStepContext:
+        """Persist the latest successful step checkpoint when enabled."""
+
+        if self.checkpoint_service is None:
+            return context
+
+        checkpoint = self._build_checkpoint_snapshot(context)
+        self.checkpoint_service.save_checkpoint(checkpoint)
+        return replace(context, checkpoint=checkpoint)
+
+    def _build_checkpoint_snapshot(self, context: MigrationStepContext) -> CheckpointSnapshot:
+        """Create a checkpoint snapshot from the latest orchestration state."""
+
+        execution_context = context.execution_context
+        current_timestamp = execution_context.current_timestamp or execution_context.started_at
+        metrics = execution_context.metrics or (
+            context.progress_tracker.current_metrics
+            if context.progress_tracker is not None
+            else None
+        )
+        if metrics is None:
+            metrics = self._resolve_metrics(
+                latest_metrics=None,
+                started_at=execution_context.started_at,
+                finished_at=current_timestamp,
+            )
+
+        return CheckpointSnapshot(
+            checkpoint_id=self._build_checkpoint_id(
+                migration_id=execution_context.migration_id,
+                completed_step=execution_context.current_step,
+            ),
+            migration_job_id=execution_context.migration_id,
+            last_completed_step=execution_context.current_step,
+            last_processed_item_id=self._resolve_last_processed_item_id(context),
+            processed_items=metrics.processed_items,
+            successful_items=metrics.successful_items,
+            failed_items=metrics.failed_items,
+            skipped_items=metrics.skipped_items,
+            uploaded_items=metrics.uploaded_items,
+            verification_failures=metrics.verification_failures,
+            current_state=(
+                execution_context.state.value
+                if execution_context.state is not None
+                else self.state_machine.current_state.value
+            ),
+            created_at=execution_context.started_at,
+            updated_at=current_timestamp,
+            version=1,
+        )
+
+    def _resolve_last_processed_item_id(self, context: MigrationStepContext) -> str | None:
+        """Return the most recent item identifier that can be checkpointed."""
+
+        if context.verification_result is not None:
+            if context.upload_result is not None and context.upload_result.uploaded_documents:
+                return context.upload_result.uploaded_documents[-1].source_identifier
+            if context.upload_result is not None and context.upload_result.item_results:
+                return str(context.upload_result.item_results[-1].item_id.value)
+
+        if context.upload_result is not None and context.upload_result.item_results:
+            return str(context.upload_result.item_results[-1].item_id.value)
+
+        if (
+            context.transformation_result is not None
+            and context.transformation_result.transformed_documents
+        ):
+            return context.transformation_result.transformed_documents[-1].source_identifier
+
+        if context.extraction_result is not None and context.extraction_result.extracted_mail_items:
+            return context.extraction_result.extracted_mail_items[-1].internet_message_id
+
+        return None
+
+    def _build_checkpoint_id(self, *, migration_id: str, completed_step: str | None) -> str:
+        """Return a deterministic checkpoint identifier for the completed step."""
+
+        resolved_step = completed_step or "unknown-step"
+        return f"{migration_id}:{resolved_step}"
+
+    def _resolve_migration_id(self) -> str:
+        """Return the migration identifier for a new execution."""
+
+        if self.identifier_generator is not None:
+            return self.identifier_generator.next_job_id()
+
+        return f"migration-{uuid4().hex}"
 
 
 __all__: list[str] = ["PipelineRunner"]
