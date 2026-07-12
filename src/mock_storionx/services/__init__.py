@@ -6,9 +6,11 @@ scaffold.
 
 from __future__ import annotations
 
+from .search_service import SearchService
 from .upload_service import UploadService
 
 __all__: list[str] = [
+    "SearchService",
     "UploadService",
     "upload_service",
     "search_service",
