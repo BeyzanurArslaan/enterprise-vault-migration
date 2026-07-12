@@ -1,56 +1,53 @@
 """Metadata service module for the mock storionX subsystem.
 
-This module defines a placeholder metadata service for the mock storionX
-target platform scaffold. The service only declares metadata-oriented method
-signatures and descriptive docstrings so the package structure is available
-during development and testing without introducing behavior, persistence, or
-infrastructure concerns.
+This module defines a lightweight placeholder metadata service for the mock
+storionX target platform scaffold. The service exposes a compact, deterministic
+surface area for development and testing without introducing persistence,
+networking, or business rules.
 """
 
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
-
 from mock_storionx.entities import Document, Metadata, Workspace
 
 
-class MetadataService(ABC):
-    """Declare placeholder metadata operations for the mock storionX target."""
+class MetadataService:
+    """Expose placeholder metadata operations for the mock storionX target."""
 
-    @abstractmethod
     def create_metadata(
         self,
         *,
         document: Document,
         metadata: Metadata,
     ) -> Metadata:
-        """Define a metadata creation operation for a document."""
-        ...
+        """Return the provided metadata for a placeholder create operation."""
 
-    @abstractmethod
+        return metadata
+
     def update_metadata(
         self,
         *,
         document: Document,
         metadata: Metadata,
     ) -> Metadata:
-        """Define a metadata update operation for a document."""
-        ...
+        """Return the provided metadata for a placeholder update operation."""
 
-    @abstractmethod
+        return metadata
+
     def get_metadata(self, *, document: Document) -> Metadata:
-        """Define a metadata retrieval operation for a document."""
-        ...
+        """Return the document metadata for a placeholder retrieval operation."""
 
-    @abstractmethod
+        return document.metadata
+
     def delete_metadata(self, *, document: Document) -> None:
-        """Define a metadata deletion operation for a document."""
-        ...
+        """Perform a placeholder metadata deletion operation."""
 
-    @abstractmethod
+        return None
+
     def list_metadata(self, *, workspace: Workspace | None = None) -> list[Metadata]:
-        """Define a metadata listing operation, optionally scoped to a workspace."""
-        ...
+        """Return an empty metadata list for the supplied scope."""
+
+        return []
 
 
 __all__: list[str] = ["MetadataService"]
