@@ -7,7 +7,7 @@ persistence, validation, or infrastructure concerns.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from uuid import uuid4
 
 
@@ -16,8 +16,8 @@ class BaseEntity:
     """Common base class for domain entities."""
 
     id: object = field(default_factory=uuid4)
-    created_at: datetime = field(default_factory=datetime.utcnow)
-    updated_at: datetime = field(default_factory=datetime.utcnow)
+    created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    updated_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
 
 __all__: list[str] = ["BaseEntity"]

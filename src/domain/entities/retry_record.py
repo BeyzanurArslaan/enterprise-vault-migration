@@ -1,7 +1,9 @@
 """Retry record entity for the migration domain.
 
-This module defines a retry record used to track retry behavior for migration
-items.
+This module defines the immutable retry record used to track retry behavior
+for both migration items and step-level orchestration retries. The record
+stores only minimal identifiers and diagnostics so the domain layer stays free
+of exception objects, tracebacks, and infrastructure dependencies.
 """
 
 from __future__ import annotations
@@ -18,9 +20,12 @@ class RetryRecord(BaseEntity):
     """Immutable structural representation of a retry record."""
 
     id: RetryRecordId
-    migration_item_id: MigrationItemId
+    migration_item_id: MigrationItemId | None
     retry_strategy: RetryStrategy
     attempt_number: int
+    migration_job_id: str | None = None
+    pipeline_step_name: str | None = None
+    retry_reason: str | None = None
 
 
 __all__: list[str] = ["RetryRecord"]

@@ -50,6 +50,10 @@ class RetryPolicy:
     def __post_init__(self) -> None:
         """Validate the retry configuration before the policy is used."""
 
+        if not isinstance(self.strategy, RetryStrategy):
+            message = "strategy must be a supported RetryStrategy value."
+            raise ValidationError(message)
+
         if self.max_attempts < 1:
             message = "max_attempts must be greater than or equal to 1."
             raise ValidationError(message)

@@ -7,13 +7,16 @@ reporting.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import replace
 from datetime import UTC, datetime
-from uuid import uuid4
+from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from application.services import CheckpointService
+from domain.entities import RetryRecord
+from domain.value_objects.identifiers import RetryRecordId
 from ports.identifier_generator_port import IdentifierGeneratorPort
+from ports.retry_repository_port import RetryRepositoryPort
 
 from ..checkpoint import CheckpointSnapshot
 from ..configuration import MigrationConfiguration
@@ -23,6 +26,7 @@ from ..execution_result import ExecutionResult
 from ..metrics import MigrationMetrics
 from ..pipeline import MigrationPipeline
 from ..progress_tracker import ProgressTracker
+from ..retry import RetryDecision, RetryPolicy
 from ..state_machine import MigrationState, MigrationStateMachine
 from ..step_context import MigrationStepContext
 from ..steps import (
@@ -49,6 +53,10 @@ class PipelineRunner:
         context: MigrationContext | None = None,
         checkpoint_service: CheckpointService | None = None,
         identifier_generator: IdentifierGeneratorPort | None = None,
+        retry_policy: RetryPolicy | None = None,
+        retry_repository: RetryRepositoryPort | None = None,
+        retry_classifier: Callable[[Exception], bool] | None = None,
+        sleeper: Callable[[float], None] | None = None,
     ) -> None:
         """Create a runner configured with ordered pipeline steps."""
 
@@ -71,6 +79,10 @@ class PipelineRunner:
         self.current_step_context: MigrationStepContext | None = initial_context
         self.checkpoint_service = checkpoint_service
         self.identifier_generator = identifier_generator
+        self.retry_policy = retry_policy
+        self.retry_repository = retry_repository
+        self.retry_classifier = retry_classifier
+        self.sleeper = sleeper
 
     def initialize(self) -> ExecutionContext:
         """Prepare the runner before pipeline execution begins."""
@@ -123,54 +135,75 @@ class PipelineRunner:
             if step_state is not None and self.state_machine.can_transition(step_state):
                 self.state_machine.transition_to(step_state)
 
-            current_context = self._advance_context(
-                current_context,
-                current_step=step.__class__.__name__,
-                current_state=self.state_machine.current_state,
-                current_timestamp=self._current_timestamp(),
-                metrics=latest_metrics,
-            )
-            current_step_context = replace(
-                current_step_context,
-                execution_context=current_context,
-                progress_tracker=self.progress_tracker or current_step_context.progress_tracker,
-                state_machine=self.state_machine,
-            )
-
-            try:
-                step.prepare(current_context)
-                step_result_context = self._execute_step(step, current_step_context)
-                if step_result_context is not None:
-                    current_step_context = step_result_context
-                    self.current_step_context = current_step_context
-                    current_context = step_result_context.execution_context
-                    step_report = step_result_context.execution_report
-                    if step_report is None:
-                        message = f"{step.__class__.__name__} did not produce an execution report"
-                        raise RuntimeError(message)
-                    latest_metrics = (
-                        step_result_context.execution_context.metrics
-                        or step_report.metrics
-                        or latest_metrics
-                    )
-                else:
-                    step_report = step.execute(current_context)
-                    if step_report.metrics is not None:
-                        latest_metrics = step_report.metrics
-
-                successful_steps += step_report.successful_steps
-                failed_steps += step_report.failed_steps
-                skipped_steps += step_report.skipped_steps
-
-                step_timestamp = self._current_timestamp()
-                current_context = self._advance_context(
+            attempt_number = 1
+            while True:
+                attempt_timestamp = self._current_timestamp()
+                attempt_context = self._advance_context(
                     current_context,
                     current_step=step.__class__.__name__,
                     current_state=self.state_machine.current_state,
-                    current_timestamp=step_timestamp,
+                    current_timestamp=attempt_timestamp,
                     metrics=latest_metrics,
                 )
-                if step_result_context is not None:
+                attempt_step_context = replace(
+                    current_step_context,
+                    execution_context=attempt_context,
+                    progress_tracker=(
+                        self.progress_tracker or current_step_context.progress_tracker
+                    ),
+                    state_machine=self.state_machine,
+                )
+
+                try:
+                    step.prepare(attempt_context)
+                    step_result_context = self._execute_step(step, attempt_step_context)
+                    if step_result_context is not None:
+                        current_step_context = step_result_context
+                        current_context = step_result_context.execution_context
+                        step_report = step_result_context.execution_report
+                        if step_report is None:
+                            message = (
+                                f"{step.__class__.__name__} did not produce an " "execution report"
+                            )
+                            raise RuntimeError(message)
+                        latest_metrics = self._merge_retry_metrics(
+                            current_metrics=(
+                                step_result_context.execution_context.metrics or step_report.metrics
+                            ),
+                            latest_metrics=latest_metrics,
+                        )
+                    else:
+                        step_report = step.execute(attempt_context)
+                        if step_report.metrics is not None:
+                            latest_metrics = self._merge_retry_metrics(
+                                current_metrics=step_report.metrics,
+                                latest_metrics=latest_metrics,
+                            )
+
+                    success_timestamp = self._current_timestamp()
+                    current_context = self._advance_context(
+                        current_context,
+                        current_step=step.__class__.__name__,
+                        current_state=self.state_machine.current_state,
+                        current_timestamp=success_timestamp,
+                        metrics=latest_metrics,
+                    )
+                    resolved_metrics = self._resolve_metrics(
+                        latest_metrics=latest_metrics,
+                        started_at=execution_context.started_at,
+                        finished_at=success_timestamp,
+                    )
+                    step.finalize(current_context)
+                    successful_steps += step_report.successful_steps
+                    failed_steps += step_report.failed_steps
+                    skipped_steps += step_report.skipped_steps
+                    self._sync_tracker(
+                        context=current_context,
+                        current_timestamp=success_timestamp,
+                        metrics=resolved_metrics,
+                        report=step_report,
+                    )
+
                     current_step_context = replace(
                         current_step_context,
                         execution_context=current_context,
@@ -178,86 +211,106 @@ class PipelineRunner:
                             self.progress_tracker or current_step_context.progress_tracker
                         ),
                         state_machine=self.state_machine,
+                        execution_report=step_report,
                     )
+                    current_step_context = self._save_checkpoint(current_step_context)
                     self.current_step_context = current_step_context
+                    completed_steps.append(step)
+                    break
+                except Exception as exc:
+                    retry_decision = self._decide_retry(
+                        exception=exc,
+                        attempt_number=attempt_number,
+                    )
+                    if retry_decision is not None and retry_decision.should_retry:
+                        retry_timestamp = self._current_timestamp()
+                        retry_metrics = self._build_retry_metrics(
+                            latest_metrics=latest_metrics,
+                            started_at=execution_context.started_at,
+                            finished_at=retry_timestamp,
+                        )
+                        retry_record = self._build_retry_record(
+                            migration_id=execution_context.migration_id,
+                            step_name=step.__class__.__name__,
+                            attempt_number=attempt_number,
+                            retry_timestamp=retry_timestamp,
+                            reason=retry_decision.reason,
+                        )
+                        if self.retry_repository is not None:
+                            self.retry_repository.save(retry_record)
+                        current_context = self._sync_retry_state(
+                            context=attempt_context,
+                            current_timestamp=retry_timestamp,
+                            metrics=retry_metrics,
+                        )
+                        current_step_context = replace(
+                            attempt_step_context,
+                            execution_context=current_context,
+                            progress_tracker=(
+                                self.progress_tracker or attempt_step_context.progress_tracker
+                            ),
+                            state_machine=self.state_machine,
+                        )
+                        self.current_step_context = current_step_context
+                        if self.sleeper is not None:
+                            self.sleeper(retry_decision.delay_seconds)
+                        latest_metrics = retry_metrics
+                        attempt_number += 1
+                        continue
 
-                resolved_metrics = self._resolve_metrics(
-                    latest_metrics=latest_metrics,
-                    started_at=execution_context.started_at,
-                    finished_at=step_timestamp,
-                )
-                self._sync_tracker(
-                    context=current_context,
-                    current_timestamp=step_timestamp,
-                    metrics=resolved_metrics,
-                    report=step_report,
-                )
-
-                current_step_context = replace(
-                    current_step_context,
-                    execution_context=current_context,
-                    progress_tracker=(
-                        self.progress_tracker or current_step_context.progress_tracker
-                    ),
-                    state_machine=self.state_machine,
-                    execution_report=step_report,
-                )
-                step.finalize(current_context)
-                current_step_context = self._save_checkpoint(current_step_context)
-                self.current_step_context = current_step_context
-                completed_steps.append(step)
-            except Exception as exc:
-                errors.append(str(exc))
-                failure_timestamp = self._current_timestamp()
-                failure_state = MigrationState.FAILED
-                self.state_machine.transition_to(failure_state)
-                failure_context = self._advance_context(
-                    current_context,
-                    current_step=step.__class__.__name__,
-                    current_state=failure_state,
-                    current_timestamp=failure_timestamp,
-                    metrics=latest_metrics,
-                )
-                failure_metrics = self._resolve_metrics(
-                    latest_metrics=latest_metrics,
-                    started_at=execution_context.started_at,
-                    finished_at=failure_timestamp,
-                )
-                failure_report = self._build_execution_report(
-                    successful_steps=successful_steps,
-                    failed_steps=failed_steps,
-                    skipped_steps=skipped_steps,
-                    started_at=execution_context.started_at,
-                    finished_at=failure_timestamp,
-                    metrics=failure_metrics,
-                    completed=False,
-                )
-                self._rollback_steps(
-                    completed_steps=completed_steps,
-                    current_step=step,
-                    context=failure_context,
-                )
-                self._sync_tracker(
-                    context=failure_context,
-                    current_timestamp=failure_timestamp,
-                    metrics=failure_metrics,
-                    report=failure_report,
-                )
-                self.current_step_context = replace(
-                    current_step_context,
-                    execution_context=failure_context,
-                    progress_tracker=self.progress_tracker or current_step_context.progress_tracker,
-                    state_machine=self.state_machine,
-                    execution_report=failure_report,
-                )
-                return self._build_result(
-                    success=False,
-                    report=failure_report,
-                    metrics=failure_metrics,
-                    started_at=execution_context.started_at,
-                    completed_at=failure_timestamp,
-                    errors=tuple(errors),
-                )
+                    errors.append(str(exc))
+                    failure_timestamp = self._current_timestamp()
+                    failure_state = MigrationState.FAILED
+                    self.state_machine.transition_to(failure_state)
+                    failure_context = self._advance_context(
+                        attempt_context,
+                        current_step=step.__class__.__name__,
+                        current_state=failure_state,
+                        current_timestamp=failure_timestamp,
+                        metrics=latest_metrics,
+                    )
+                    failure_metrics = self._resolve_metrics(
+                        latest_metrics=latest_metrics,
+                        started_at=execution_context.started_at,
+                        finished_at=failure_timestamp,
+                    )
+                    failure_report = self._build_execution_report(
+                        successful_steps=successful_steps,
+                        failed_steps=failed_steps,
+                        skipped_steps=skipped_steps,
+                        started_at=execution_context.started_at,
+                        finished_at=failure_timestamp,
+                        metrics=failure_metrics,
+                        completed=False,
+                    )
+                    self._rollback_steps(
+                        completed_steps=completed_steps,
+                        current_step=step,
+                        context=failure_context,
+                    )
+                    self._sync_tracker(
+                        context=failure_context,
+                        current_timestamp=failure_timestamp,
+                        metrics=failure_metrics,
+                        report=failure_report,
+                    )
+                    self.current_step_context = replace(
+                        current_step_context,
+                        execution_context=failure_context,
+                        progress_tracker=(
+                            self.progress_tracker or current_step_context.progress_tracker
+                        ),
+                        state_machine=self.state_machine,
+                        execution_report=failure_report,
+                    )
+                    return self._build_result(
+                        success=False,
+                        report=failure_report,
+                        metrics=failure_metrics,
+                        started_at=execution_context.started_at,
+                        completed_at=failure_timestamp,
+                        errors=tuple(errors),
+                    )
 
         completion_timestamp = self._current_timestamp()
         self.state_machine.transition_to(MigrationState.COMPLETED)
@@ -602,6 +655,119 @@ class PipelineRunner:
             except Exception:
                 continue
 
+    def _decide_retry(
+        self,
+        *,
+        exception: Exception,
+        attempt_number: int,
+    ) -> RetryDecision | None:
+        """Evaluate whether a failed step attempt should be retried."""
+
+        if self.retry_policy is None or self.retry_classifier is None:
+            return None
+
+        retryable = self.retry_classifier(exception)
+        return self.retry_policy.decide(
+            attempt_number=attempt_number,
+            retryable=retryable,
+            reason=str(exception),
+        )
+
+    def _build_retry_metrics(
+        self,
+        *,
+        latest_metrics: MigrationMetrics | None,
+        started_at: datetime,
+        finished_at: datetime,
+    ) -> MigrationMetrics:
+        """Build retry-aware metrics for a failed step attempt."""
+
+        retry_metrics = self._resolve_metrics(
+            latest_metrics=latest_metrics,
+            started_at=started_at,
+            finished_at=finished_at,
+        )
+        return replace(retry_metrics, retried_items=retry_metrics.retried_items + 1)
+
+    def _merge_retry_metrics(
+        self,
+        *,
+        current_metrics: MigrationMetrics | None,
+        latest_metrics: MigrationMetrics | None,
+    ) -> MigrationMetrics | None:
+        """Preserve retry counters when a step reports fresh metrics."""
+
+        if current_metrics is None:
+            return latest_metrics
+
+        if latest_metrics is None:
+            return current_metrics
+
+        retried_items = max(current_metrics.retried_items, latest_metrics.retried_items)
+        if retried_items == current_metrics.retried_items:
+            return current_metrics
+
+        return replace(current_metrics, retried_items=retried_items)
+
+    def _build_retry_record(
+        self,
+        *,
+        migration_id: str,
+        step_name: str,
+        attempt_number: int,
+        retry_timestamp: datetime,
+        reason: str | None,
+    ) -> RetryRecord:
+        """Create a retry record for a retryable step failure."""
+
+        if self.retry_policy is None:
+            message = "Retry policy is required to build a retry record."
+            raise RuntimeError(message)
+
+        retry_record_id = RetryRecordId(
+            value=uuid5(NAMESPACE_URL, f"{migration_id}:{step_name}:{attempt_number}")
+        )
+        return RetryRecord(
+            id=retry_record_id,
+            migration_item_id=None,
+            retry_strategy=self.retry_policy.strategy,
+            attempt_number=attempt_number,
+            migration_job_id=migration_id,
+            pipeline_step_name=step_name,
+            retry_reason=reason,
+            created_at=retry_timestamp,
+            updated_at=retry_timestamp,
+        )
+
+    def _sync_retry_state(
+        self,
+        *,
+        context: ExecutionContext,
+        current_timestamp: datetime,
+        metrics: MigrationMetrics,
+    ) -> ExecutionContext:
+        """Synchronize tracker state after a retry decision is recorded."""
+
+        retry_context = replace(
+            context,
+            metrics=metrics,
+            progress_tracker=self.progress_tracker or context.progress_tracker,
+            current_timestamp=current_timestamp,
+        )
+        if self.progress_tracker is not None:
+            retry_snapshot = replace(
+                self.progress_tracker.current_snapshot,
+                last_updated=current_timestamp,
+            )
+            self.progress_tracker.update_snapshot(retry_snapshot)
+            self.progress_tracker.update_execution_context(retry_context)
+            self.progress_tracker.update_metrics(metrics)
+            self.progress_tracker.update_migration_state(self.state_machine.current_state)
+
+        self.execution_context = retry_context
+        self.metrics = metrics
+        return retry_context
+
     def _step_state(self, step: PipelineStep) -> MigrationState | None:
         """Map a pipeline step to a migration lifecycle state."""
 
@@ -725,7 +891,10 @@ class PipelineRunner:
                 if step_result_context is None:
                     step_report = step.execute(current_context)
                     if step_report.metrics is not None:
-                        latest_metrics = step_report.metrics
+                        latest_metrics = self._merge_retry_metrics(
+                            current_metrics=step_report.metrics,
+                            latest_metrics=latest_metrics,
+                        )
                     successful_steps += step_report.successful_steps
                     failed_steps += step_report.failed_steps
                     skipped_steps += step_report.skipped_steps
@@ -771,10 +940,11 @@ class PipelineRunner:
                 message = f"{step.__class__.__name__} did not produce an execution report"
                 raise RuntimeError(message)
 
-            latest_metrics = (
-                step_result_context.execution_context.metrics
-                or reconstructed_report.metrics
-                or latest_metrics
+            latest_metrics = self._merge_retry_metrics(
+                current_metrics=(
+                    step_result_context.execution_context.metrics or reconstructed_report.metrics
+                ),
+                latest_metrics=latest_metrics,
             )
             successful_steps += reconstructed_report.successful_steps
             failed_steps += reconstructed_report.failed_steps
