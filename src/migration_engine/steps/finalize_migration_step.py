@@ -18,6 +18,7 @@ from ..execution_result import ExecutionResult
 from ..metrics import MigrationMetrics
 from ..progress_tracker import ProgressTracker
 from ..reconciliation import ReconciliationResult
+from ..reporting import build_execution_report_summary, resolve_final_status
 from ..state_machine import MigrationState, MigrationStateMachine
 from ..step_context import MigrationStepContext
 from ..transformation import TransformedDocument
@@ -99,7 +100,17 @@ class FinalizeMigrationStep(PipelineStep):
             started_at=started_at,
             completed_at=completed_at,
             failed_execution=failed_execution,
+            context=context,
         )
+        final_status = resolve_final_status(final_report)
+        final_report = replace(final_report, final_status=final_status)
+        summary = build_execution_report_summary(
+            final_report,
+            checkpoint_identifier=(
+                context.checkpoint.checkpoint_id if context.checkpoint is not None else None
+            ),
+        )
+        final_report = replace(final_report, summary=summary)
         execution_result = ExecutionResult(
             success=not failed_execution,
             execution_report=final_report,
@@ -489,11 +500,27 @@ class FinalizeMigrationStep(PipelineStep):
         started_at: datetime,
         completed_at: datetime,
         failed_execution: bool,
+        context: MigrationStepContext,
     ) -> ExecutionReport:
         """Resolve the final execution report for the migration execution."""
 
         duration_seconds = max((completed_at - started_at).total_seconds(), 0.0)
         if report is not None:
+            discovered_archives = (
+                context.discovery_result.archive_count
+                if context.discovery_result is not None
+                else 0
+            )
+            extracted_items = (
+                context.extraction_result.total_items
+                if context.extraction_result is not None
+                else 0
+            )
+            transformed_items = (
+                len(context.transformation_result.transformed_documents)
+                if context.transformation_result is not None
+                else 0
+            )
             return replace(
                 report,
                 successful_steps=0 if failed_execution else 1,
@@ -501,6 +528,15 @@ class FinalizeMigrationStep(PipelineStep):
                 skipped_steps=0,
                 duration_seconds=duration_seconds,
                 completed=not failed_execution,
+                job_id=context.execution_context.migration_id,
+                started_at=started_at,
+                completed_at=completed_at,
+                resumed=context.checkpoint is not None,
+                checkpoint_sequence=None,
+                discovered_archives=discovered_archives,
+                extracted_items=extracted_items,
+                transformed_items=transformed_items,
+                warnings=self._build_warnings(context),
                 metrics=metrics,
                 reconciliation=reconciliation,
                 archive_names=configuration.archive_names,
@@ -509,12 +545,32 @@ class FinalizeMigrationStep(PipelineStep):
                 end_date=configuration.end_date,
             )
 
+        discovered_archives = (
+            context.discovery_result.archive_count if context.discovery_result is not None else 0
+        )
+        extracted_items = (
+            context.extraction_result.total_items if context.extraction_result is not None else 0
+        )
+        transformed_items = (
+            len(context.transformation_result.transformed_documents)
+            if context.transformation_result is not None
+            else 0
+        )
         return ExecutionReport(
             successful_steps=0 if failed_execution else 1,
             failed_steps=1 if failed_execution else 0,
             skipped_steps=0,
             duration_seconds=duration_seconds,
             completed=not failed_execution,
+            job_id=context.execution_context.migration_id,
+            started_at=started_at,
+            completed_at=completed_at,
+            resumed=context.checkpoint is not None,
+            checkpoint_sequence=None,
+            discovered_archives=discovered_archives,
+            extracted_items=extracted_items,
+            transformed_items=transformed_items,
+            warnings=self._build_warnings(context),
             metrics=metrics,
             reconciliation=reconciliation,
             archive_names=configuration.archive_names,

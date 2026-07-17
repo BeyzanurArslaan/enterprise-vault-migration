@@ -20,10 +20,14 @@ from adapters.source import MockEnterpriseVaultSourceAdapter
 from adapters.target import MockStorionXTargetAdapter
 from application.dto import UploadResult
 from domain.value_objects.identifiers import MigrationItemId
+from migration_engine.configuration import MigrationConfiguration
+from migration_engine.contracts import ExecutionContext, ProgressSnapshot
 from migration_engine.execution_result import ExecutionResult
 from migration_engine.pipeline import MigrationPipeline
+from migration_engine.progress_tracker import ProgressTracker
 from migration_engine.runner import PipelineRunner
 from migration_engine.state_machine import MigrationState
+from migration_engine.step_context import MigrationStepContext
 from migration_engine.steps import (
     DiscoverArchivesStep,
     ExtractItemsStep,
@@ -39,6 +43,7 @@ from mock_ev.generators import ArchiveGenerator
 from mock_storionx.services import UploadService
 from mock_storionx.storage import DocumentStorage
 from ports import StorionXTargetPort
+from ports.identifier_generator_port import IdentifierGeneratorPort
 
 
 class _DeterministicPipelineRunner(PipelineRunner):
@@ -49,16 +54,44 @@ class _DeterministicPipelineRunner(PipelineRunner):
         *,
         pipeline: MigrationPipeline,
         timestamps: Iterator[datetime],
+        initial_context: MigrationStepContext | None = None,
+        identifier_generator: IdentifierGeneratorPort | None = None,
     ) -> None:
         """Create a pipeline runner with a deterministic timestamp source."""
 
-        super().__init__(pipeline=pipeline)
+        super().__init__(
+            pipeline=pipeline,
+            initial_context=initial_context,
+            identifier_generator=identifier_generator,
+        )
         self._timestamps = timestamps
 
     def _current_timestamp(self) -> datetime:
         """Return the next deterministic orchestration timestamp."""
 
         return next(self._timestamps)
+
+
+class _DeterministicIdentifierGenerator(IdentifierGeneratorPort):
+    """Return predictable identifiers for the end-to-end workflow tests."""
+
+    def next_archive_id(self) -> str:
+        return "archive-1"
+
+    def next_mail_item_id(self) -> str:
+        return "mail-item-1"
+
+    def next_attachment_id(self) -> str:
+        return "attachment-1"
+
+    def next_archived_file_id(self) -> str:
+        return "archived-file-1"
+
+    def next_job_id(self) -> str:
+        return "migration-1"
+
+    def next_migration_item_id(self) -> str:
+        return "migration-item-1"
 
 
 class _FailingMockStorionXTargetAdapter(MockStorionXTargetAdapter):
@@ -207,6 +240,7 @@ def _build_runner(
     seed: int,
     target_port: StorionXTargetPort | None = None,
     vault_stores: tuple[VaultStore, ...] | None = None,
+    initial_context: MigrationStepContext | None = None,
 ) -> tuple[_DeterministicPipelineRunner, MockEnterpriseVaultSourceAdapter, StorionXTargetPort]:
     """Build a deterministic runner together with its source and target adapters."""
 
@@ -225,6 +259,8 @@ def _build_runner(
     runner = _DeterministicPipelineRunner(
         pipeline=pipeline,
         timestamps=timestamps,
+        initial_context=initial_context,
+        identifier_generator=_DeterministicIdentifierGenerator(),
     )
     return runner, source_adapter, resolved_target_port
 
@@ -249,6 +285,7 @@ def _run_workflow(
     seed: int,
     target_port: StorionXTargetPort | None = None,
     vault_stores: tuple[VaultStore, ...] | None = None,
+    initial_context: MigrationStepContext | None = None,
 ) -> tuple[
     _DeterministicPipelineRunner,
     MockEnterpriseVaultSourceAdapter,
@@ -261,6 +298,7 @@ def _run_workflow(
         seed=seed,
         target_port=target_port,
         vault_stores=vault_stores,
+        initial_context=initial_context,
     )
     result = runner.run()
     return runner, source_adapter, resolved_target_port, result
@@ -308,6 +346,60 @@ def test_end_to_end_migration_workflow_completes_successfully() -> None:
     assert target_port.upload_service.active_session is not None
     assert target_port.upload_service.active_session.completed_at is not None
     assert source_vault_stores == source_adapter.discover_archives()
+
+
+def test_end_to_end_migration_workflow_reports_dry_run_summary() -> None:
+    """The workflow should report a dry-run completion without target mutation."""
+
+    started_at = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
+    progress_tracker = ProgressTracker(
+        snapshot=ProgressSnapshot(
+            total_items=0,
+            processed_items=0,
+            successful_items=0,
+            failed_items=0,
+            skipped_items=0,
+            current_archive=None,
+            current_mailbox=None,
+            current_item=None,
+            started_at=started_at,
+            last_updated=started_at,
+        ),
+        migration_state=MigrationState.CREATED,
+    )
+    initial_context = MigrationStepContext(
+        execution_context=ExecutionContext(
+            migration_id="migration-1",
+            configuration=MigrationConfiguration(dry_run=True, archive_names=("Archive One",)),
+            started_at=started_at,
+            current_step=None,
+            progress_tracker=progress_tracker,
+            state=MigrationState.CREATED,
+            current_timestamp=started_at,
+        ),
+        progress_tracker=progress_tracker,
+        state_machine=None,
+    )
+
+    runner, _, target_port, result = _run_workflow(
+        seed=7,
+        initial_context=initial_context,
+    )
+
+    assert result.success is True
+    assert result.execution_report is not None
+    assert result.execution_report.final_status == "dry_run_completed"
+    assert result.execution_report.summary is not None
+    assert "Dry-run migration completed successfully without target mutation." in (
+        result.execution_report.summary
+    )
+    assert result.execution_report.metrics is not None
+    assert result.execution_report.metrics.uploaded_items == 0
+    assert result.execution_report.metrics.dry_run_items == 2
+    assert runner.current_step_context is not None
+    assert runner.current_step_context.execution_context.configuration.dry_run is True
+    assert isinstance(target_port, MockStorionXTargetAdapter)
+    assert target_port.document_storage.list() == []
 
 
 def test_end_to_end_migration_workflow_handles_empty_source() -> None:

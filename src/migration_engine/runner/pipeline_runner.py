@@ -15,6 +15,7 @@ from uuid import NAMESPACE_URL, uuid4, uuid5
 from application.services import CheckpointService
 from domain.entities import RetryRecord
 from domain.value_objects.identifiers import RetryRecordId
+from ports.clock_port import ClockPort
 from ports.identifier_generator_port import IdentifierGeneratorPort
 from ports.retry_repository_port import RetryRepositoryPort
 
@@ -52,6 +53,7 @@ class PipelineRunner:
         initial_context: MigrationStepContext | None = None,
         context: MigrationContext | None = None,
         checkpoint_service: CheckpointService | None = None,
+        clock: ClockPort | None = None,
         identifier_generator: IdentifierGeneratorPort | None = None,
         retry_policy: RetryPolicy | None = None,
         retry_repository: RetryRepositoryPort | None = None,
@@ -78,6 +80,7 @@ class PipelineRunner:
         self.metrics: MigrationMetrics | None = None
         self.current_step_context: MigrationStepContext | None = initial_context
         self.checkpoint_service = checkpoint_service
+        self.clock = clock
         self.identifier_generator = identifier_generator
         self.retry_policy = retry_policy
         self.retry_repository = retry_repository
@@ -790,6 +793,9 @@ class PipelineRunner:
 
     def _current_timestamp(self) -> datetime:
         """Return the current UTC timestamp for orchestration bookkeeping."""
+
+        if self.clock is not None:
+            return self.clock.now()
 
         return datetime.now(tz=UTC)
 

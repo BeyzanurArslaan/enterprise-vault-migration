@@ -24,6 +24,17 @@ class ExecutionReport:
     skipped_steps: int
     duration_seconds: float
     completed: bool
+    job_id: str | None = None
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    resumed: bool = False
+    checkpoint_sequence: int | None = None
+    discovered_archives: int = 0
+    extracted_items: int = 0
+    transformed_items: int = 0
+    warnings: tuple[str, ...] = ()
+    final_status: str | None = None
+    summary: str | None = None
     metrics: MigrationMetrics | None = None
     reconciliation: ReconciliationResult | None = None
     archive_names: tuple[str, ...] | None = None

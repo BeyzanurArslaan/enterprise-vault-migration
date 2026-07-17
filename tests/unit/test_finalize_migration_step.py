@@ -14,6 +14,7 @@ from migration_engine.contracts import ExecutionContext, ExecutionReport, Progre
 from migration_engine.execution_result import ExecutionResult
 from migration_engine.metrics import MigrationMetrics
 from migration_engine.progress_tracker import ProgressTracker
+from migration_engine.reporting import format_execution_report
 from migration_engine.state_machine import MigrationState, MigrationStateMachine
 from migration_engine.step_context import MigrationStepContext
 from migration_engine.steps import FinalizeMigrationStep
@@ -303,6 +304,12 @@ def test_finalize_migration_step_completes_successfully() -> None:
     assert execution_report is not None
     assert execution_report.completed is True
     assert execution_report.failed_steps == 0
+    assert execution_report.job_id == "migration-1"
+    assert execution_report.started_at == started_at
+    assert execution_report.completed_at == completed_at
+    assert execution_report.final_status == "completed"
+    assert execution_report.summary is not None
+    assert format_execution_report(execution_report) == execution_report.summary
     reconciliation = execution_report.reconciliation
     assert reconciliation is not None
     assert reconciliation.expected_items == 2

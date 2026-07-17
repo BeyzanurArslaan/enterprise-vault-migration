@@ -18,11 +18,15 @@ from application.dto import UploadResult
 from application.services import CheckpointService
 from application.use_cases.resume_migration import ResumeMigrationUseCase
 from domain.enums.retry_strategy import RetryStrategy
+from migration_engine.configuration import MigrationConfiguration
+from migration_engine.contracts import ExecutionContext, ProgressSnapshot
 from migration_engine.orchestrator import MigrationOrchestrator
 from migration_engine.pipeline import MigrationPipeline
+from migration_engine.progress_tracker import ProgressTracker
 from migration_engine.retry import RetryPolicy
 from migration_engine.runner import PipelineRunner
 from migration_engine.state_machine import MigrationState
+from migration_engine.step_context import MigrationStepContext
 from migration_engine.steps import (
     DiscoverArchivesStep,
     ExtractItemsStep,
@@ -84,11 +88,13 @@ class _DeterministicPipelineRunner(PipelineRunner):
         retry_classifier: Callable[[Exception], bool] | None = None,
         sleeper: Callable[[float], None] | None = None,
         identifier_generator: IdentifierGeneratorPort | None = None,
+        initial_context: MigrationStepContext | None = None,
     ) -> None:
         """Create a runner with a deterministic timestamp source."""
 
         super().__init__(
             pipeline=pipeline,
+            initial_context=initial_context,
             checkpoint_service=checkpoint_service,
             retry_policy=retry_policy,
             retry_repository=retry_repository,
@@ -182,6 +188,41 @@ def _timestamp_sequence() -> Iterator[datetime]:
         yield started_at + timedelta(seconds=offset)
 
 
+def _build_initial_context() -> MigrationStepContext:
+    """Build a deterministic initial context with an active archive filter."""
+
+    started_at = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
+    progress_tracker = ProgressTracker(
+        snapshot=ProgressSnapshot(
+            total_items=0,
+            processed_items=0,
+            successful_items=0,
+            failed_items=0,
+            skipped_items=0,
+            current_archive=None,
+            current_mailbox=None,
+            current_item=None,
+            started_at=started_at,
+            last_updated=started_at,
+        ),
+        migration_state=MigrationState.CREATED,
+    )
+    execution_context = ExecutionContext(
+        migration_id="migration-1",
+        configuration=MigrationConfiguration(archive_names=("Archive One",)),
+        started_at=started_at,
+        current_step=None,
+        progress_tracker=progress_tracker,
+        state=MigrationState.CREATED,
+        current_timestamp=started_at,
+    )
+    return MigrationStepContext(
+        execution_context=execution_context,
+        progress_tracker=progress_tracker,
+        state_machine=None,
+    )
+
+
 def _build_partial_pipeline(
     *,
     vault_stores: tuple[VaultStore, ...],
@@ -236,6 +277,7 @@ def test_idempotent_retry_and_resume_do_not_duplicate_target_documents() -> None
         ),
         timestamps=_timestamp_sequence(),
         checkpoint_service=checkpoint_service,
+        initial_context=_build_initial_context(),
         retry_policy=RetryPolicy(
             strategy=RetryStrategy.FIXED_DELAY,
             max_attempts=3,
@@ -278,3 +320,8 @@ def test_idempotent_retry_and_resume_do_not_duplicate_target_documents() -> None
     assert resumed_runner.current_step_context is not None
     assert resumed_runner.current_step_context.verification_result is not None
     assert resumed_runner.current_step_context.verification_result.verified_count == 1
+    assert resumed_result.execution_report is not None
+    assert resumed_result.execution_report.final_status == "completed"
+    assert resumed_result.execution_report.resumed is True
+    assert resumed_result.execution_report.summary is not None
+    assert "Archive filters: Archive One" in resumed_result.execution_report.summary
