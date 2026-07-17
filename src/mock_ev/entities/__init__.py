@@ -9,6 +9,7 @@ from __future__ import annotations
 from .archive import Archive
 from .archived_file import ArchivedFile
 from .attachment import Attachment
+from .content_part import ContentPart
 from .journal_archive import JournalArchive
 from .mail_item import MailItem
 from .mailbox import Mailbox
@@ -20,6 +21,7 @@ __all__: list[str] = [
     "ArchivedFile",
     "Archive",
     "Attachment",
+    "ContentPart",
     "JournalArchive",
     "MailItem",
     "Mailbox",

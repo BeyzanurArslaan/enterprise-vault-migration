@@ -9,7 +9,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from datetime import datetime
 
-from mock_ev.entities import Attachment, MailItem, RetentionPolicy
+from mock_ev.entities import Attachment, ContentPart, MailItem, RetentionPolicy
 
 
 class MailDatasetBuilder:
@@ -32,6 +32,7 @@ class MailDatasetBuilder:
         cc_recipients: Sequence[str] | None = None,
         bcc_recipients: Sequence[str] | None = None,
         attachments: Sequence[Attachment] | None = None,
+        content_parts: Sequence[ContentPart] | None = None,
         folder_path: str = "/Inbox",
     ) -> MailItem:
         """Construct a mail item from already-built primitives."""
@@ -51,6 +52,7 @@ class MailDatasetBuilder:
             cc_recipients=list(cc_recipients or []),
             bcc_recipients=list(bcc_recipients or []),
             attachments=list(attachments or []),
+            content_parts=list(content_parts or []),
             folder_path=folder_path,
         )
 

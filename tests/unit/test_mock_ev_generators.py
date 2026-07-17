@@ -139,6 +139,8 @@ def test_mail_generator_creates_complete_mail_items() -> None:
     assert mail_item.received_at <= mail_item.modified_at
     assert mail_item.sent_at <= mail_item.received_at
     assert len(mail_item.attachments) == 2
+    assert len(mail_item.content_parts) == 1
+    assert mail_item.content_parts[0].size_bytes == len(mail_item.body.encode("utf-8"))
     assert mail_item.retention_policy.name
 
 

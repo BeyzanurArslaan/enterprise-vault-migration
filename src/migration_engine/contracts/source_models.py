@@ -53,6 +53,30 @@ class SourceAttachment(Protocol):
         """Return the attachment checksum."""
 
 
+class SourceContentPart(Protocol):
+    """Structural contract for a source SIS content part."""
+
+    @property
+    def part_id(self) -> str:
+        """Return the content part identifier."""
+
+    @property
+    def data_ref(self) -> str:
+        """Return the reference used to locate the raw part data."""
+
+    @property
+    def data(self) -> bytes:
+        """Return the raw content bytes for the part."""
+
+    @property
+    def size_bytes(self) -> int:
+        """Return the content part size in bytes."""
+
+    @property
+    def sha256(self) -> str:
+        """Return the content part SHA-256 checksum."""
+
+
 class SourceMailItem(Protocol):
     """Structural contract for a source mail item."""
 
@@ -113,6 +137,10 @@ class SourceMailItem(Protocol):
         """Return the attachments."""
 
     @property
+    def content_parts(self) -> Sequence[SourceContentPart]:
+        """Return the SIS content parts for the message body."""
+
+    @property
     def folder_path(self) -> str:
         """Return the source folder path for the mail item."""
 
@@ -163,6 +191,7 @@ class SourceDatasetGenerator(Protocol):
 __all__: list[str] = [
     "SourceArchive",
     "SourceAttachment",
+    "SourceContentPart",
     "SourceDatasetGenerator",
     "SourceMailbox",
     "SourceMailItem",

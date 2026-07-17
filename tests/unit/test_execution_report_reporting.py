@@ -284,6 +284,8 @@ def test_execution_report_summary_and_dict_are_deterministic() -> None:
     assert timing["completed_at"] == "2026-01-01T12:01:00+00:00"
     assert scope["discovered_archives"] == 3
     assert metrics["retried_items"] == 2
+    assert metrics["rehydrated_items"] == 0
+    assert metrics["sis_cache_hits"] == 0
     assert reconciliation["status"] == "reconciled"
     assert "mock_storionx" not in json_payload
     assert "secret" not in json_payload

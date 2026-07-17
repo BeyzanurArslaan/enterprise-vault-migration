@@ -12,6 +12,8 @@ from collections.abc import Sequence
 from dataclasses import replace
 from datetime import datetime
 
+from domain.exceptions import ValidationError
+
 from ..configuration import MigrationConfiguration
 from ..contracts import (
     ExecutionContext,
@@ -29,6 +31,7 @@ from ..discovery import ArchiveDiscoveryResult
 from ..extraction import ExtractionResult
 from ..metrics import MigrationMetrics
 from ..progress_tracker import ProgressTracker
+from ..rehydration import RehydratedContent, SisRehydrator
 from ..state_machine import MigrationState, MigrationStateMachine
 from ..step_context import MigrationStepContext
 from ..transformation import TransformationResult, TransformedDocument
@@ -42,11 +45,13 @@ class TransformItemsStep(PipelineStep):
         *,
         vault_stores: Sequence[SourceVaultStore] | None = None,
         dataset_generator: SourceDatasetGenerator | None = None,
+        sis_rehydrator: SisRehydrator | None = None,
     ) -> None:
         """Create a transformation step with optional deterministic overrides."""
 
         self._vault_stores = tuple(vault_stores) if vault_stores is not None else None
         self._dataset_generator = dataset_generator
+        self._sis_rehydrator = sis_rehydrator
 
     def prepare(self, context: ExecutionContext) -> None:
         """Prepare item transformation for the current migration context."""
@@ -85,20 +90,40 @@ class TransformItemsStep(PipelineStep):
             source_vault_stores,
             context.discovery_result.vault_store_names if context.discovery_result else (),
         )
+        rehydrator = self._sis_rehydrator if self._sis_rehydrator is not None else SisRehydrator()
         transformed_documents: list[TransformedDocument] = []
+        warnings: list[str] = []
         current_archive_name: str | None = None
         current_mailbox_address: str | None = None
         current_item_name: str | None = None
+        failed_items = 0
 
         for mail_item in context.extraction_result.extracted_mail_items:
             archive, mailbox = self._resolve_mail_item_context(
                 selected_vault_stores,
                 mail_item,
             )
+            try:
+                rehydrated_content = self._rehydrate_mail_item(
+                    mail_item=mail_item,
+                    started_at=context.execution_context.started_at,
+                    completed_at=context.execution_context.current_timestamp
+                    or context.execution_context.started_at,
+                    rehydrator=rehydrator,
+                )
+            except ValidationError as exc:
+                failed_items += 1
+                warnings.append(str(exc))
+                current_archive_name = archive.name
+                current_mailbox_address = mailbox.address
+                current_item_name = mail_item.subject
+                continue
+
             transformed_document = self._transform_mail_item(
                 archive_name=archive.name,
                 mailbox_address=mailbox.address,
                 mail_item=mail_item,
+                rehydrated_content=rehydrated_content,
             )
             transformed_documents.append(transformed_document)
             current_archive_name = archive.name
@@ -108,13 +133,11 @@ class TransformItemsStep(PipelineStep):
         started_at = context.execution_context.started_at
         completed_at = context.execution_context.current_timestamp or started_at
         skipped_items = 0
-        failed_items = 0
-        warnings: tuple[str, ...] = ()
         transformation_result = TransformationResult(
             transformed_documents=tuple(transformed_documents),
             skipped_items=skipped_items,
             failed_items=failed_items,
-            warnings=warnings,
+            warnings=tuple(warnings),
             started_at=started_at,
             completed_at=completed_at,
         )
@@ -128,6 +151,7 @@ class TransformItemsStep(PipelineStep):
                     else None
                 )
             ),
+            rehydrator=rehydrator,
             transformed_documents=transformation_result.transformed_documents,
             skipped_items=skipped_items,
             failed_items=failed_items,
@@ -157,6 +181,8 @@ class TransformItemsStep(PipelineStep):
             configuration=context.execution_context.configuration,
             started_at=started_at,
             completed_at=completed_at,
+            completed=failed_items == 0,
+            warnings=tuple(warnings),
         )
         progress_tracker = self._resolve_tracker(
             tracker=context.progress_tracker,
@@ -322,9 +348,11 @@ class TransformItemsStep(PipelineStep):
         archive_name: str,
         mailbox_address: str,
         mail_item: SourceMailItem,
+        rehydrated_content: RehydratedContent,
     ) -> TransformedDocument:
         """Transform a mail item into a deterministic neutral document."""
 
+        _ = rehydrated_content
         attachment_sizes = tuple(attachment.size_bytes for attachment in mail_item.attachments)
         attachment_filenames = tuple(attachment.filename for attachment in mail_item.attachments)
         attachment_checksums = tuple(attachment.checksum for attachment in mail_item.attachments)
@@ -357,6 +385,22 @@ class TransformItemsStep(PipelineStep):
             attachment_sizes=attachment_sizes,
             created_at=mail_item.sent_at,
             modified_at=mail_item.modified_at,
+        )
+
+    def _rehydrate_mail_item(
+        self,
+        *,
+        mail_item: SourceMailItem,
+        started_at: datetime,
+        completed_at: datetime,
+        rehydrator: SisRehydrator,
+    ) -> RehydratedContent:
+        """Rehydrate the source mail item content using the SIS cache."""
+
+        return rehydrator.rehydrate(
+            mail_item,
+            started_at=started_at,
+            completed_at=completed_at,
         )
 
     def _derive_department(self, mailbox_address: str) -> str:
@@ -402,6 +446,7 @@ class TransformItemsStep(PipelineStep):
         self,
         *,
         metrics: MigrationMetrics | None,
+        rehydrator: SisRehydrator,
         transformed_documents: Sequence[TransformedDocument],
         skipped_items: int,
         failed_items: int,
@@ -411,7 +456,8 @@ class TransformItemsStep(PipelineStep):
         """Resolve the metrics object for the current transformation state."""
 
         duration_seconds = max((completed_at - started_at).total_seconds(), 0.0)
-        processed_items = len(transformed_documents)
+        processed_items = len(transformed_documents) + skipped_items + failed_items
+        successful_items = len(transformed_documents)
         processed_bytes = sum(document.size_bytes for document in transformed_documents)
         throughput = processed_items / duration_seconds if duration_seconds > 0.0 else 0.0
         average_item_size = processed_bytes // processed_items if processed_items > 0 else 0
@@ -423,14 +469,19 @@ class TransformItemsStep(PipelineStep):
                 throughput_items_per_second=throughput,
                 average_item_size=average_item_size,
                 processed_bytes=processed_bytes,
-                total_items=processed_items + skipped_items + failed_items,
+                total_items=processed_items,
                 processed_items=processed_items,
-                successful_items=processed_items,
+                successful_items=successful_items,
                 failed_items=failed_items,
                 skipped_items=skipped_items,
                 retried_items=0,
                 uploaded_items=0,
                 verification_failures=0,
+                rehydrated_items=rehydrator.rehydrated_items,
+                rehydration_failures=rehydrator.rehydration_failures,
+                rehydrated_bytes=rehydrator.rehydrated_bytes,
+                sis_cache_hits=rehydrator.cache_hits,
+                sis_cache_misses=rehydrator.cache_misses,
                 total_bytes=processed_bytes,
                 started_at=started_at,
                 finished_at=completed_at,
@@ -443,14 +494,19 @@ class TransformItemsStep(PipelineStep):
             processed_bytes=processed_bytes,
             estimated_remaining_seconds=None,
             peak_memory_usage_mb=None,
-            total_items=processed_items + skipped_items + failed_items,
+            total_items=processed_items,
             processed_items=processed_items,
-            successful_items=processed_items,
+            successful_items=successful_items,
             failed_items=failed_items,
             skipped_items=skipped_items,
             retried_items=0,
             uploaded_items=0,
             verification_failures=0,
+            rehydrated_items=rehydrator.rehydrated_items,
+            rehydration_failures=rehydrator.rehydration_failures,
+            rehydrated_bytes=rehydrator.rehydrated_bytes,
+            sis_cache_hits=rehydrator.cache_hits,
+            sis_cache_misses=rehydrator.cache_misses,
             total_bytes=processed_bytes,
             started_at=started_at,
             finished_at=completed_at,
@@ -464,6 +520,8 @@ class TransformItemsStep(PipelineStep):
         configuration: MigrationConfiguration,
         started_at: datetime,
         completed_at: datetime,
+        completed: bool,
+        warnings: tuple[str, ...],
     ) -> ExecutionReport:
         """Resolve the execution report for the transformation step."""
 
@@ -471,11 +529,12 @@ class TransformItemsStep(PipelineStep):
         if report is not None:
             return replace(
                 report,
-                successful_steps=1,
-                failed_steps=0,
+                successful_steps=1 if completed else 0,
+                failed_steps=0 if completed else 1,
                 skipped_steps=0,
                 duration_seconds=duration_seconds,
-                completed=True,
+                completed=completed,
+                warnings=warnings,
                 metrics=metrics,
                 archive_names=configuration.archive_names,
                 folder_paths=configuration.folder_paths,
@@ -484,11 +543,12 @@ class TransformItemsStep(PipelineStep):
             )
 
         return ExecutionReport(
-            successful_steps=1,
-            failed_steps=0,
+            successful_steps=1 if completed else 0,
+            failed_steps=0 if completed else 1,
             skipped_steps=0,
             duration_seconds=duration_seconds,
-            completed=True,
+            completed=completed,
+            warnings=warnings,
             metrics=metrics,
             archive_names=configuration.archive_names,
             folder_paths=configuration.folder_paths,

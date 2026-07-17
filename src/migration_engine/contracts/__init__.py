@@ -14,6 +14,7 @@ from .progress_snapshot import ProgressSnapshot
 from .source_models import (
     SourceArchive,
     SourceAttachment,
+    SourceContentPart,
     SourceDatasetGenerator,
     SourceMailbox,
     SourceMailItem,
@@ -28,6 +29,7 @@ __all__: list[str] = [
     "ProgressSnapshot",
     "SourceArchive",
     "SourceAttachment",
+    "SourceContentPart",
     "SourceDatasetGenerator",
     "SourceMailbox",
     "SourceMailItem",

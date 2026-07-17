@@ -1,17 +1,21 @@
-"""Regression tests for Sprint 8.1 architecture cleanup.
+"""Regression tests for Sprint 8.2 SIS rehydration and cleanup alignment.
 
 This module verifies that the repository keeps a single canonical
 orchestration implementation, that the dry-run application use case delegates
 to the existing pipeline while forcing analysis-only execution, and that the
-rehydration package exposes no misleading placeholder APIs.
+rehydration package exposes the real target-neutral SIS APIs.
 """
 
 from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from application.orchestrators import MigrationOrchestrator as ApplicationMigrationOrchestrator
-from application.use_cases import DryRunMigrationUseCase as ExportedDryRunMigrationUseCase
+from application.orchestrators import (
+    MigrationOrchestrator as ApplicationMigrationOrchestrator,
+)
+from application.use_cases import (
+    DryRunMigrationUseCase as ExportedDryRunMigrationUseCase,
+)
 from application.use_cases.dry_run import DryRunMigrationUseCase
 from migration_engine import rehydration
 from migration_engine.checkpoint import CheckpointSnapshot
@@ -21,6 +25,12 @@ from migration_engine.execution_result import ExecutionResult
 from migration_engine.metrics import MigrationMetrics
 from migration_engine.orchestrator import MigrationOrchestrator
 from migration_engine.progress_tracker import ProgressTracker
+from migration_engine.rehydration import (
+    RehydratedContent as ExportedRehydratedContent,
+)
+from migration_engine.rehydration import (
+    SisRehydrator as ExportedSisRehydrator,
+)
 from migration_engine.runner import PipelineRunner
 from migration_engine.state_machine import MigrationState, MigrationStateMachine
 from migration_engine.step_context import MigrationStepContext
@@ -138,8 +148,8 @@ def test_dry_run_use_case_forces_dry_run_and_delegates_to_pipeline() -> None:
 
 
 def test_rehydration_package_exposes_no_placeholder_apis() -> None:
-    """The rehydration package should reserve scope without fake APIs."""
+    """The rehydration package should expose the concrete SIS APIs."""
 
-    assert rehydration.__all__ == []
-    assert not hasattr(rehydration, "SISRehydrationService")
-    assert not hasattr(rehydration, "rehydrate")
+    assert rehydration.__all__ == ["RehydratedContent", "SisRehydrator"]
+    assert rehydration.RehydratedContent is ExportedRehydratedContent
+    assert rehydration.SisRehydrator is ExportedSisRehydrator

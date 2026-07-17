@@ -7,8 +7,12 @@ reused an existing target document instead of creating a new record. The
 ``dry_run_items`` counter records uploads that were intentionally skipped in
 analysis-only execution mode. The ``filtered_archives`` and ``filtered_items``
 fields record source entities excluded by configured migration filters. The
-``reconciled_items``, ``missing_items``, and ``checksum_mismatches`` counters
-summarize reconciliation outcomes without duplicating the richer result model.
+``rehydrated_items``, ``rehydration_failures``, ``rehydrated_bytes``,
+``sis_cache_hits``, and ``sis_cache_misses`` counters summarize SIS
+rehydration and cache reuse without duplicating the richer rehydration result
+model. The ``reconciled_items``, ``missing_items``, and ``checksum_mismatches``
+counters summarize reconciliation outcomes without duplicating the richer
+result model.
 """
 
 from __future__ import annotations
@@ -37,6 +41,11 @@ class MigrationMetrics:
     retried_items: int = 0
     idempotent_replays: int = 0
     dry_run_items: int = 0
+    rehydrated_items: int = 0
+    rehydration_failures: int = 0
+    rehydrated_bytes: int = 0
+    sis_cache_hits: int = 0
+    sis_cache_misses: int = 0
     reconciled_items: int = 0
     missing_items: int = 0
     checksum_mismatches: int = 0

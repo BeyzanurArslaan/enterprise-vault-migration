@@ -1,17 +1,19 @@
 """Mail generator for the mock Enterprise Vault subsystem.
 
 This module produces synthetic mail items, including message metadata,
-recipients, body text, timestamps, and generated attachments.
+recipients, body text, SIS content parts, timestamps, and generated
+attachments.
 """
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Final
 
 from mock_ev.builders import MailDatasetBuilder
-from mock_ev.entities import Attachment, MailItem, RetentionPolicy
+from mock_ev.entities import Attachment, ContentPart, MailItem, RetentionPolicy
 from mock_ev.loaders import FixtureLoader
 
 from ._shared import GenerationContext, build_generation_context
@@ -44,7 +46,18 @@ class MailGenerator:
 
         subject = self._context.rng.choice(self._context.mail_subjects)
         sender = self._context.rng.choice(self._context.contact_emails)
+        internet_message_id = f"<{self._context.faker.uuid4()}@{self._sender_domain(sender)}>"
         body = self._context.faker.paragraph(nb_sentences=self._context.rng.randint(3, 7))
+        body_bytes = body.encode("utf-8")
+        content_parts = (
+            ContentPart(
+                part_id=f"{internet_message_id}-body-1",
+                data_ref=f"sis:{internet_message_id}:body-1",
+                data=body_bytes,
+                size_bytes=len(body_bytes),
+                sha256=hashlib.sha256(body_bytes).hexdigest(),
+            ),
+        )
         recipients = self._choose_addresses(exclude=sender, minimum=1, maximum=4)
         cc_recipients = self._choose_addresses(
             exclude=sender,
@@ -74,7 +87,6 @@ class MailGenerator:
             end_date=received_at + timedelta(hours=24),
             tzinfo=UTC,
         )
-        internet_message_id = f"<{self._context.faker.uuid4()}@{self._sender_domain(sender)}>"
         conversation_id = self._context.faker.uuid4()
         retention_policy = self._choose_retention_policy()
         message_size = self._calculate_message_size(
@@ -101,6 +113,7 @@ class MailGenerator:
             cc_recipients=cc_recipients,
             bcc_recipients=bcc_recipients,
             attachments=attachments,
+            content_parts=content_parts,
         )
 
     def _choose_addresses(

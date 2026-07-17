@@ -81,6 +81,11 @@ def test_migration_metrics_supports_extended_fields_and_defaults() -> None:
     assert metrics.retried_items == 0
     assert metrics.uploaded_items == 0
     assert metrics.verification_failures == 0
+    assert metrics.rehydrated_items == 0
+    assert metrics.rehydration_failures == 0
+    assert metrics.rehydrated_bytes == 0
+    assert metrics.sis_cache_hits == 0
+    assert metrics.sis_cache_misses == 0
     assert metrics.total_bytes == 0
     assert metrics.started_at is None
     assert metrics.finished_at is None

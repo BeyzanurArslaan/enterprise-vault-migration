@@ -1,10 +1,14 @@
-"""Rehydration package for the migration engine.
+"""SIS rehydration package for the migration engine.
 
-This package reserves the structural boundary for SIS rehydration work
-planned for Sprint 8.2. It intentionally exposes no public APIs yet and does
-not imply that a rehydration implementation exists in this release.
+This package contains the target-neutral SIS rehydration contracts and the
+execution-scoped cache-backed service used by the transformation step. The
+package exposes only the minimal immutable result model and service needed to
+rebuild source item content deterministically during a migration run.
 """
 
 from __future__ import annotations
 
-__all__: list[str] = []
+from .rehydrated_content import RehydratedContent
+from .sis_rehydrator import SisRehydrator
+
+__all__: list[str] = ["RehydratedContent", "SisRehydrator"]
