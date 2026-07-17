@@ -5,10 +5,14 @@ from __future__ import annotations
 from dataclasses import replace
 from datetime import UTC, datetime
 
+import pytest
+
 from adapters.target import MockStorionXTargetAdapter
 from domain.exceptions import IdempotencyConflictError
 from migration_engine.transformation import TransformedDocument
 from mock_storionx.entities import Document, Metadata, UploadSession
+from mock_storionx.exceptions import ServiceUnavailableError, TooManyRequestsError
+from mock_storionx.services import UploadRateLimiter
 
 
 def _build_transformed_document() -> TransformedDocument:
@@ -184,3 +188,94 @@ def test_mock_storionx_target_adapter_returns_target_neutral_documents() -> None
     assert adapter.document_storage.get(transformed_document.source_identifier) == (
         _build_expected_document()
     )
+
+
+def test_mock_storionx_target_adapter_raises_retry_after_for_throttled_uploads() -> None:
+    """The adapter should surface retry-after metadata when rate limited."""
+
+    timestamp = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
+    transformed_document = _build_transformed_document()
+    adapter = MockStorionXTargetAdapter(
+        workspace_id="workspace-1",
+        session_id="session-1",
+        started_at=timestamp,
+        rate_limiter=UploadRateLimiter(
+            requests_per_second=1.0,
+            clock=lambda: timestamp,
+        ),
+    )
+
+    first_result = adapter.upload_archived_file(
+        transformed_document.source_identifier,
+        transformed_document,
+    )
+
+    with pytest.raises(TooManyRequestsError) as exc_info:
+        adapter.upload_archived_file(
+            transformed_document.source_identifier,
+            transformed_document,
+        )
+
+    assert first_result.success is True
+    assert exc_info.value.retry_after_seconds == pytest.approx(1.0)
+    assert adapter.document_storage.list() == [_build_expected_document()]
+
+
+def test_mock_storionx_target_adapter_shares_limiter_across_instances() -> None:
+    """The adapter should honor a shared limiter across worker-safe instances."""
+
+    timestamp = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
+    shared_rate_limiter = UploadRateLimiter(
+        requests_per_second=1.0,
+        clock=lambda: timestamp,
+    )
+    first_adapter = MockStorionXTargetAdapter(
+        workspace_id="workspace-1",
+        session_id="session-1",
+        started_at=timestamp,
+        rate_limiter=shared_rate_limiter,
+    )
+    second_adapter = MockStorionXTargetAdapter(
+        workspace_id="workspace-1",
+        session_id="session-2",
+        started_at=timestamp,
+        rate_limiter=shared_rate_limiter,
+    )
+
+    first_result = first_adapter.upload_archived_file(
+        "message-1",
+        _build_transformed_document(),
+    )
+
+    with pytest.raises(TooManyRequestsError):
+        second_adapter.upload_archived_file(
+            "message-2",
+            _build_transformed_document(),
+        )
+
+    assert first_result.success is True
+    assert first_adapter.document_storage.list() == [_build_expected_document()]
+    assert second_adapter.document_storage.list() == []
+
+
+def test_mock_storionx_target_adapter_simulates_temporary_service_unavailability() -> None:
+    """The adapter should surface temporary 503-style failures structurally."""
+
+    transformed_document = _build_transformed_document()
+    adapter = MockStorionXTargetAdapter(
+        workspace_id="workspace-1",
+        session_id="session-1",
+        started_at=datetime(2026, 1, 1, 12, 0, tzinfo=UTC),
+        failure_injector=lambda _document: ServiceUnavailableError(
+            retry_after_seconds=2.5,
+        ),
+    )
+
+    with pytest.raises(ServiceUnavailableError) as exc_info:
+        adapter.upload_archived_file(
+            transformed_document.source_identifier,
+            transformed_document,
+        )
+
+    assert exc_info.value.retry_after_seconds == pytest.approx(2.5)
+    assert adapter.document_storage.list() == []

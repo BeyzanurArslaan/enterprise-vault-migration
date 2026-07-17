@@ -16,6 +16,7 @@ from migration_engine.retry import RetryPolicy
 from migration_engine.runner import PipelineRunner
 from migration_engine.state_machine import MigrationState
 from migration_engine.step_context import MigrationStepContext
+from mock_storionx.exceptions import ServiceUnavailableError, TooManyRequestsError
 from ports.identifier_generator_port import IdentifierGeneratorPort
 
 
@@ -234,6 +235,54 @@ class ReportingStep(PipelineStep):
         self.calls.append(f"rollback:{context.current_step}:{context.state.value}")
 
 
+class TransportFailureStep(PipelineStep):
+    """Raise a transient transport-style failure before succeeding."""
+
+    def __init__(
+        self,
+        report: ExecutionReport,
+        *,
+        exception_factory: Callable[[], Exception],
+        fail_attempts: int = 1,
+    ) -> None:
+        """Create a step that simulates a transient target failure."""
+
+        self._report = report
+        self._exception_factory = exception_factory
+        self._fail_attempts = fail_attempts
+        self._attempts = 0
+        self.calls: list[str] = []
+
+    def prepare(self, context: ExecutionContext) -> None:
+        """Record the prepare call for the current attempt."""
+
+        assert context.state is not None
+        self.calls.append(f"prepare:{context.current_step}:{context.state.value}")
+
+    def execute(self, context: ExecutionContext) -> ExecutionReport:
+        """Raise a transient failure before eventually succeeding."""
+
+        assert context.state is not None
+        self._attempts += 1
+        self.calls.append(f"execute:{self._attempts}:{context.current_step}:{context.state.value}")
+        if self._attempts <= self._fail_attempts:
+            raise self._exception_factory()
+
+        return self._report
+
+    def finalize(self, context: ExecutionContext) -> None:
+        """Record the finalize call for the step."""
+
+        assert context.state is not None
+        self.calls.append(f"finalize:{context.current_step}:{context.state.value}")
+
+    def rollback(self, context: ExecutionContext) -> None:
+        """Record the rollback call for the step."""
+
+        assert context.state is not None
+        self.calls.append(f"rollback:{context.current_step}:{context.state.value}")
+
+
 class _RecordingCheckpointRepository(InMemoryCheckpointRepository):
     """Count checkpoint saves while keeping the concrete repository behavior."""
 
@@ -408,6 +457,82 @@ def test_pipeline_runner_retries_transient_failure_and_persists_retry_records() 
         "execute:2:RetryableStep:initializing",
         "finalize:RetryableStep:initializing",
     ]
+
+
+def test_pipeline_runner_recovers_from_retry_after_throttling() -> None:
+    """429-style throttling should retry with retry-after awareness."""
+
+    delays: list[float] = []
+    retry_repository = InMemoryRetryRepository()
+    step = TransportFailureStep(
+        _build_success_report(),
+        exception_factory=lambda: TooManyRequestsError(retry_after_seconds=1.5),
+    )
+    runner = _DeterministicPipelineRunner(
+        steps=(step,),
+        timestamps=_timestamp_sequence(),
+        retry_policy=RetryPolicy(
+            strategy=RetryStrategy.FIXED_DELAY,
+            max_attempts=3,
+            fixed_delay_seconds=0.25,
+        ),
+        retry_repository=retry_repository,
+        sleeper=delays.append,
+        identifier_generator=_DeterministicIdentifierGenerator(),
+    )
+
+    result = runner.run()
+
+    assert result.success is True
+    assert delays == [1.5]
+    assert runner.metrics is not None
+    assert runner.metrics.throttled_uploads == 1
+    assert runner.metrics.retry_after_count == 1
+    assert runner.metrics.temporary_failures == 0
+    assert runner.metrics.retried_items == 1
+    assert len(retry_repository.list_for_job("migration-1")) == 1
+    assert retry_repository.list_for_job("migration-1")[0].attempt_number == 1
+    assert step.calls == [
+        "prepare:TransportFailureStep:initializing",
+        "execute:1:TransportFailureStep:initializing",
+        "prepare:TransportFailureStep:initializing",
+        "execute:2:TransportFailureStep:initializing",
+        "finalize:TransportFailureStep:initializing",
+    ]
+
+
+def test_pipeline_runner_recovers_from_temporary_service_unavailability() -> None:
+    """503-style temporary outages should increment failure metrics and retry."""
+
+    delays: list[float] = []
+    retry_repository = InMemoryRetryRepository()
+    step = TransportFailureStep(
+        _build_success_report(),
+        exception_factory=lambda: ServiceUnavailableError(),
+    )
+    runner = _DeterministicPipelineRunner(
+        steps=(step,),
+        timestamps=_timestamp_sequence(),
+        retry_policy=RetryPolicy(
+            strategy=RetryStrategy.FIXED_DELAY,
+            max_attempts=3,
+            fixed_delay_seconds=0.25,
+        ),
+        retry_repository=retry_repository,
+        sleeper=delays.append,
+        identifier_generator=_DeterministicIdentifierGenerator(),
+    )
+
+    result = runner.run()
+
+    assert result.success is True
+    assert delays == [0.25]
+    assert runner.metrics is not None
+    assert runner.metrics.throttled_uploads == 0
+    assert runner.metrics.retry_after_count == 0
+    assert runner.metrics.temporary_failures == 1
+    assert runner.metrics.retried_items == 1
+    assert len(retry_repository.list_for_job("migration-1")) == 1
 
 
 def test_pipeline_runner_uses_exponential_backoff_delay_sequence() -> None:

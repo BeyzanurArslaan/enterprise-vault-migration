@@ -231,6 +231,7 @@ class PipelineRunner:
                             latest_metrics=latest_metrics,
                             started_at=execution_context.started_at,
                             finished_at=retry_timestamp,
+                            exception=exc,
                         )
                         retry_record = self._build_retry_record(
                             migration_id=execution_context.migration_id,
@@ -601,6 +602,10 @@ class PipelineRunner:
             failed_items=0,
             skipped_items=0,
             retried_items=0,
+            throttled_uploads=0,
+            retry_after_count=0,
+            temporary_failures=0,
+            worker_utilization=0.0,
             uploaded_items=0,
             verification_failures=0,
             total_bytes=0,
@@ -685,15 +690,27 @@ class PipelineRunner:
     ) -> RetryDecision | None:
         """Evaluate whether a failed step attempt should be retried."""
 
-        if self.retry_policy is None or self.retry_classifier is None:
+        if self.retry_policy is None:
             return None
 
-        retryable = self.retry_classifier(exception)
-        return self.retry_policy.decide(
+        if self.retry_classifier is not None:
+            retryable = self.retry_classifier(exception)
+        else:
+            retryable = hasattr(exception, "retry_after_seconds")
+
+        if not retryable:
+            return None
+
+        retry_decision = self.retry_policy.decide(
             attempt_number=attempt_number,
             retryable=retryable,
             reason=str(exception),
         )
+        retry_after_seconds = float(getattr(exception, "retry_after_seconds", 0.0) or 0.0)
+        if retry_after_seconds > retry_decision.delay_seconds:
+            return replace(retry_decision, delay_seconds=retry_after_seconds)
+
+        return retry_decision
 
     def _build_retry_metrics(
         self,
@@ -701,6 +718,7 @@ class PipelineRunner:
         latest_metrics: MigrationMetrics | None,
         started_at: datetime,
         finished_at: datetime,
+        exception: Exception,
     ) -> MigrationMetrics:
         """Build retry-aware metrics for a failed step attempt."""
 
@@ -709,7 +727,25 @@ class PipelineRunner:
             started_at=started_at,
             finished_at=finished_at,
         )
-        return replace(retry_metrics, retried_items=retry_metrics.retried_items + 1)
+        status_code = getattr(exception, "status_code", None)
+        retry_after_seconds = float(getattr(exception, "retry_after_seconds", 0.0) or 0.0)
+        throttled_uploads = retry_metrics.throttled_uploads
+        retry_after_count = retry_metrics.retry_after_count
+        temporary_failures = retry_metrics.temporary_failures
+        if retry_after_seconds > 0.0:
+            retry_after_count += 1
+        if status_code == 429:
+            throttled_uploads += 1
+        if status_code == 503:
+            temporary_failures += 1
+
+        return replace(
+            retry_metrics,
+            retried_items=retry_metrics.retried_items + 1,
+            throttled_uploads=throttled_uploads,
+            retry_after_count=retry_after_count,
+            temporary_failures=temporary_failures,
+        )
 
     def _merge_retry_metrics(
         self,
@@ -726,10 +762,39 @@ class PipelineRunner:
             return current_metrics
 
         retried_items = max(current_metrics.retried_items, latest_metrics.retried_items)
-        if retried_items == current_metrics.retried_items:
+        throttled_uploads = max(
+            current_metrics.throttled_uploads,
+            latest_metrics.throttled_uploads,
+        )
+        retry_after_count = max(
+            current_metrics.retry_after_count,
+            latest_metrics.retry_after_count,
+        )
+        temporary_failures = max(
+            current_metrics.temporary_failures,
+            latest_metrics.temporary_failures,
+        )
+        worker_utilization = max(
+            current_metrics.worker_utilization,
+            latest_metrics.worker_utilization,
+        )
+        if (
+            retried_items == current_metrics.retried_items
+            and throttled_uploads == current_metrics.throttled_uploads
+            and retry_after_count == current_metrics.retry_after_count
+            and temporary_failures == current_metrics.temporary_failures
+            and worker_utilization == current_metrics.worker_utilization
+        ):
             return current_metrics
 
-        return replace(current_metrics, retried_items=retried_items)
+        return replace(
+            current_metrics,
+            retried_items=retried_items,
+            throttled_uploads=throttled_uploads,
+            retry_after_count=retry_after_count,
+            temporary_failures=temporary_failures,
+            worker_utilization=worker_utilization,
+        )
 
     def _build_retry_record(
         self,
@@ -1060,6 +1125,10 @@ class PipelineRunner:
             uploaded_items=checkpoint.uploaded_items,
             verification_failures=checkpoint.verification_failures,
             dry_run_items=checkpoint.dry_run_items,
+            throttled_uploads=checkpoint.throttled_uploads,
+            retry_after_count=checkpoint.retry_after_count,
+            temporary_failures=checkpoint.temporary_failures,
+            worker_utilization=checkpoint.worker_utilization,
             total_bytes=0,
             started_at=started_at,
             finished_at=finished_at,
@@ -1153,6 +1222,8 @@ class PipelineRunner:
             folder_paths=execution_context.configuration.folder_paths,
             start_date=execution_context.configuration.start_date,
             end_date=execution_context.configuration.end_date,
+            upload_worker_count=execution_context.configuration.upload_worker_count,
+            upload_requests_per_second=execution_context.configuration.upload_requests_per_second,
             version=1,
         )
 
@@ -1208,6 +1279,8 @@ class PipelineRunner:
                 folder_paths=resume_checkpoint.folder_paths,
                 start_date=resume_checkpoint.start_date,
                 end_date=resume_checkpoint.end_date,
+                upload_worker_count=resume_checkpoint.upload_worker_count,
+                upload_requests_per_second=resume_checkpoint.upload_requests_per_second,
             )
 
         return MigrationConfiguration(
@@ -1216,6 +1289,8 @@ class PipelineRunner:
             folder_paths=resume_checkpoint.folder_paths,
             start_date=resume_checkpoint.start_date,
             end_date=resume_checkpoint.end_date,
+            upload_worker_count=resume_checkpoint.upload_worker_count,
+            upload_requests_per_second=resume_checkpoint.upload_requests_per_second,
         )
 
 

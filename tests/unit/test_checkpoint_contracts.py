@@ -117,6 +117,12 @@ def test_checkpoint_snapshot_is_immutable_and_versioned() -> None:
         "folder_paths",
         "start_date",
         "end_date",
+        "upload_worker_count",
+        "upload_requests_per_second",
+        "throttled_uploads",
+        "retry_after_count",
+        "temporary_failures",
+        "worker_utilization",
         "version",
     }
 

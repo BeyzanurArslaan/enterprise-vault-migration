@@ -9,6 +9,7 @@ testing.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from threading import RLock
 from typing import TypeVar
 
 from mock_storionx.entities import Document, Folder, Metadata, UploadSession, Workspace
@@ -21,27 +22,32 @@ class _InMemoryStorage[TEntity]:
     """Store entities in a dictionary keyed by their identifier."""
 
     _items: dict[str, TEntity] = field(default_factory=dict)
+    _lock: RLock = field(default_factory=RLock, init=False, repr=False)
 
     def add(self, item: TEntity) -> TEntity:
         """Add an item to the in-memory storage."""
 
-        self._items[self._key(item)] = item
-        return item
+        with self._lock:
+            self._items[self._key(item)] = item
+            return item
 
     def get(self, identifier: str) -> TEntity | None:
         """Return an item by identifier when present."""
 
-        return self._items.get(identifier)
+        with self._lock:
+            return self._items.get(identifier)
 
     def list(self) -> list[TEntity]:
         """Return all stored items."""
 
-        return list(self._items.values())
+        with self._lock:
+            return list(self._items.values())
 
     def remove(self, identifier: str) -> None:
         """Remove an item by identifier when present."""
 
-        self._items.pop(identifier, None)
+        with self._lock:
+            self._items.pop(identifier, None)
 
     def _key(self, item: TEntity) -> str:
         """Extract the storage key for an item."""

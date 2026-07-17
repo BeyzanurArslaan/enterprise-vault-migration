@@ -7,13 +7,19 @@ idempotency by treating the transformed document's stable ``source_identifier``
 as the idempotency key for the mock target scope. Replays that match the
 existing checksum and metadata return a neutral replay result without creating
 duplicate target records. Conflicting replays raise a domain-level conflict
-error so the migration engine can surface the failure structurally. Production
-persistence would need a unique constraint on the idempotency key.
+error so the migration engine can surface the failure structurally. The
+adapter also simulates bounded parallel upload behavior through a shared,
+thread-safe rate limiter and optional temporary service failures that look like
+HTTP 429 and 503 responses to the retry layer without exposing HTTP concerns
+to the migration engine. Production persistence would need a unique constraint
+on the idempotency key.
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import UTC, datetime
+from threading import RLock
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from application.dto import UploadResult
@@ -23,7 +29,8 @@ from domain.exceptions import IdempotencyConflictError
 from domain.value_objects.identifiers import MigrationItemId
 from migration_engine.transformation import TransformedDocument
 from mock_storionx.entities import Document, Metadata, UploadSession
-from mock_storionx.services import UploadService
+from mock_storionx.exceptions import ServiceUnavailableError, TooManyRequestsError
+from mock_storionx.services import UploadRateLimiter, UploadService
 from mock_storionx.storage import DocumentStorage
 from ports import StorionXTargetPort
 
@@ -39,6 +46,10 @@ class MockStorionXTargetAdapter(StorionXTargetPort):
         document_storage: DocumentStorage | None = None,
         session_id: str | None = None,
         started_at: datetime | None = None,
+        rate_limiter: UploadRateLimiter | None = None,
+        requests_per_second: float | None = None,
+        clock: Callable[[], datetime] | None = None,
+        failure_injector: Callable[[TransformedDocument], Exception | None] | None = None,
     ) -> None:
         """Create an adapter backed by the existing mock storionX services."""
 
@@ -48,6 +59,12 @@ class MockStorionXTargetAdapter(StorionXTargetPort):
         self.session_id = session_id
         self.started_at = started_at or datetime.now(tz=UTC)
         self._active_session_id: str | None = None
+        self._rate_limiter = rate_limiter or UploadRateLimiter(
+            requests_per_second=requests_per_second,
+            clock=clock,
+        )
+        self._failure_injector = failure_injector
+        self._lock = RLock()
         self._uploaded_documents: dict[str, TransformedDocument] = {}
 
     def create_archive(self, archive_id: str) -> str:
@@ -70,32 +87,42 @@ class MockStorionXTargetAdapter(StorionXTargetPort):
         """Upload a transformed archived file into the mock storionX target."""
 
         transformed_document = self._require_transformed_document(payload)
-        stored_document = self._map_document(transformed_document)
-        existing_document = self.document_storage.get(stored_document.id)
-        if existing_document is not None:
-            if existing_document != stored_document:
-                message = (
-                    "Idempotency conflict for key "
-                    f"{stored_document.id!r}: existing checksum "
-                    f"{existing_document.checksum!r} does not match "
-                    f"received checksum {stored_document.checksum!r}."
-                )
-                raise IdempotencyConflictError(message)
+        retry_after_seconds = self._rate_limiter.acquire_delay_seconds()
+        if retry_after_seconds > 0.0:
+            raise TooManyRequestsError(retry_after_seconds=retry_after_seconds)
 
+        failure = self._resolve_temporary_failure(transformed_document)
+        if failure is not None:
+            raise failure
+
+        stored_document = self._map_document(transformed_document)
+        with self._lock:
+            existing_document = self.document_storage.get(stored_document.id)
+            if existing_document is not None:
+                if existing_document != stored_document:
+                    message = (
+                        "Idempotency conflict for key "
+                        f"{stored_document.id!r}: existing checksum "
+                        f"{existing_document.checksum!r} does not match "
+                        f"received checksum {stored_document.checksum!r}."
+                    )
+                    raise IdempotencyConflictError(message)
+
+                self._uploaded_documents[stored_document.id] = transformed_document
+                return self._build_upload_result(
+                    transformed_document=transformed_document,
+                    target_identifier=stored_document.id,
+                    idempotent_replay=True,
+                )
+
+            self._ensure_session()
+            self.document_storage.add(stored_document)
             self._uploaded_documents[stored_document.id] = transformed_document
-            return self._build_upload_result(
-                transformed_document=transformed_document,
-                target_identifier=stored_document.id,
-                idempotent_replay=True,
+            self.upload_service.upload_document(
+                document=stored_document,
+                session_id=self._active_session_id,
             )
 
-        self._ensure_session()
-        self.document_storage.add(stored_document)
-        self._uploaded_documents[stored_document.id] = transformed_document
-        self.upload_service.upload_document(
-            document=stored_document,
-            session_id=self._active_session_id,
-        )
         return self._build_upload_result(
             transformed_document=transformed_document,
             target_identifier=stored_document.id,
@@ -119,7 +146,7 @@ class MockStorionXTargetAdapter(StorionXTargetPort):
             return job_id
 
         return self.upload_service.finalize_upload(
-            completed_at=active_session.started_at,
+            completed_at=datetime.now(tz=UTC),
         )
 
     def _ensure_session(self) -> UploadSession:
@@ -149,6 +176,24 @@ class MockStorionXTargetAdapter(StorionXTargetPort):
 
         message = "MockStorionXTargetAdapter expects a TransformedDocument payload."
         raise TypeError(message)
+
+    def _resolve_temporary_failure(
+        self,
+        transformed_document: TransformedDocument,
+    ) -> Exception | None:
+        """Return an optional temporary failure for the current upload attempt."""
+
+        if self._failure_injector is None:
+            return None
+
+        failure = self._failure_injector(transformed_document)
+        if failure is None:
+            return None
+
+        if isinstance(failure, (ServiceUnavailableError, TooManyRequestsError)):
+            return failure
+
+        return failure
 
     def _map_document(self, transformed_document: TransformedDocument) -> Document:
         """Map a target-neutral transformed document to a mock storionX document."""

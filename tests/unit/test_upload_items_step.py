@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from threading import Barrier, Lock
 from uuid import NAMESPACE_URL, uuid5
 
 from application.dto import UploadResult
@@ -76,6 +77,73 @@ class _RecordingTargetPort(StorionXTargetPort):
 
     def finalize_job(self, job_id: str) -> str:
         """Record job finalization calls."""
+
+        return job_id
+
+    def get_uploaded_document(self, document_id: str) -> TransformedDocument | None:
+        """Return no uploaded documents for upload step tests."""
+
+        return None
+
+
+class _BlockingRecordingTargetPort(StorionXTargetPort):
+    """Record concurrent upload calls while forcing deterministic overlap."""
+
+    def __init__(self, expected_calls: int) -> None:
+        """Create a blocking target port with a bounded worker overlap."""
+
+        self.calls: list[str] = []
+        self._barrier = Barrier(expected_calls)
+        self._lock = Lock()
+        self._active_calls = 0
+        self.max_active_calls = 0
+
+    def create_archive(self, archive_id: str) -> str:
+        """Return the requested archive identifier."""
+
+        return archive_id
+
+    def upload_mail_item(self, mail_item_id: str, payload: object) -> object:
+        """Upload a mail item through the archived-file boundary."""
+
+        return self.upload_archived_file(mail_item_id, payload)
+
+    def upload_attachment(self, attachment_id: str, payload: object) -> object:
+        """Upload an attachment through the archived-file boundary."""
+
+        return self.upload_archived_file(attachment_id, payload)
+
+    def upload_archived_file(
+        self,
+        archived_file_id: str,
+        payload: object,
+    ) -> UploadResult:
+        """Record the call and keep workers overlapping until the batch completes."""
+
+        if not isinstance(payload, TransformedDocument):
+            message = "Unexpected payload"
+            raise TypeError(message)
+
+        with self._lock:
+            self.calls.append(archived_file_id)
+            self._active_calls += 1
+            self.max_active_calls = max(self.max_active_calls, self._active_calls)
+
+        self._barrier.wait(timeout=5.0)
+
+        with self._lock:
+            self._active_calls -= 1
+
+        return UploadResult(
+            item_id=MigrationItemId(uuid5(NAMESPACE_URL, payload.source_identifier)),
+            success=True,
+            target_identifier=payload.source_identifier,
+            error_message=None,
+            idempotent_replay=False,
+        )
+
+    def finalize_job(self, job_id: str) -> str:
+        """Return the migration job identifier unchanged."""
 
         return job_id
 
@@ -529,6 +597,69 @@ def test_upload_items_step_skips_target_port_during_dry_run() -> None:
     assert updated_context.execution_context.metrics.dry_run_items == 1
     assert updated_context.execution_context.metrics.uploaded_items == 0
     assert updated_context.execution_context.metrics.idempotent_replays == 0
+    assert updated_context.execution_context.metrics.skipped_items == 1
+
+
+def test_upload_items_step_uses_parallel_workers_without_duplicate_uploads() -> None:
+    """Parallel uploads should remain deterministic and avoid duplicate calls."""
+
+    started_at = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
+    completed_at = started_at + timedelta(seconds=6)
+    duplicate_document = _build_transformed_document(
+        source_identifier="message-A1-1",
+        archive_name="Archive A1",
+        mailbox_address="alice@example.com",
+        subject="A1-1",
+        message_size=100,
+        attachment_sizes=(10,),
+    )
+    transformation_result = _build_transformation_result(
+        (
+            duplicate_document,
+            duplicate_document,
+            _build_transformed_document(
+                source_identifier="message-B1-1",
+                archive_name="Archive B1",
+                mailbox_address="bob@example.com",
+                subject="B1-1",
+                message_size=130,
+                attachment_sizes=(20, 30),
+            ),
+        ),
+        started_at=started_at,
+        completed_at=completed_at,
+    )
+    tracker = ProgressTracker(snapshot=_build_snapshot(), metrics=_build_metrics())
+    context = _build_step_context(
+        transformation_result=transformation_result,
+        current_timestamp=completed_at,
+        tracker=tracker,
+    )
+    parallel_context = replace(
+        context,
+        execution_context=replace(
+            context.execution_context,
+            configuration=MigrationConfiguration(upload_worker_count=2),
+        ),
+    )
+    target_port = _BlockingRecordingTargetPort(expected_calls=2)
+
+    updated_context = UploadItemsStep(target_port=target_port).upload(parallel_context)
+
+    assert sorted(target_port.calls) == [
+        "message-A1-1",
+        "message-B1-1",
+    ]
+    assert target_port.max_active_calls == 2
+    assert updated_context.upload_result is not None
+    assert updated_context.upload_result.uploaded_document_ids == (
+        "message-A1-1",
+        "message-B1-1",
+    )
+    assert updated_context.upload_result.skipped_documents == (duplicate_document,)
+    assert updated_context.execution_context.metrics is not None
+    assert updated_context.execution_context.metrics.worker_utilization == 1.0
+    assert updated_context.execution_context.metrics.uploaded_items == 2
     assert updated_context.execution_context.metrics.skipped_items == 1
 
 

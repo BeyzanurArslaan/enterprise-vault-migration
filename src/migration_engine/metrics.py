@@ -12,7 +12,10 @@ fields record source entities excluded by configured migration filters. The
 rehydration and cache reuse without duplicating the richer rehydration result
 model. The ``reconciled_items``, ``missing_items``, and ``checksum_mismatches``
 counters summarize reconciliation outcomes without duplicating the richer
-result model.
+result model. The ``throttled_uploads``, ``retry_after_count``,
+``temporary_failures``, and ``worker_utilization`` fields summarize bounded
+parallel upload behavior and retry pressure without exposing transport
+details.
 """
 
 from __future__ import annotations
@@ -49,6 +52,10 @@ class MigrationMetrics:
     reconciled_items: int = 0
     missing_items: int = 0
     checksum_mismatches: int = 0
+    throttled_uploads: int = 0
+    retry_after_count: int = 0
+    temporary_failures: int = 0
+    worker_utilization: float = 0.0
     uploaded_items: int = 0
     verification_failures: int = 0
     total_bytes: int = 0

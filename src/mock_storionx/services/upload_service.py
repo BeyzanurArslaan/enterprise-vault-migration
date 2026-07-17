@@ -9,6 +9,7 @@ session lifecycle used during development and testing.
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from threading import RLock
 from uuid import uuid4
 
 from mock_storionx.entities import Document, UploadSession
@@ -21,6 +22,7 @@ class UploadService:
         """Create an upload service with no active session."""
 
         self._active_session: UploadSession | None = None
+        self._lock = RLock()
 
     def create_upload_session(
         self,
@@ -37,14 +39,16 @@ class UploadService:
             started_at=started_at or datetime.now(tz=UTC),
             uploaded_documents=[],
         )
-        self._active_session = upload_session
-        return upload_session
+        with self._lock:
+            self._active_session = upload_session
+            return upload_session
 
     @property
     def active_session(self) -> UploadSession | None:
         """Return the current active upload session when one exists."""
 
-        return self._active_session
+        with self._lock:
+            return self._active_session
 
     def upload_document(
         self,
@@ -54,19 +58,20 @@ class UploadService:
     ) -> UploadSession:
         """Attach a document to the active upload session."""
 
-        upload_session = self._require_active_session()
-        if session_id is not None and session_id != upload_session.id:
-            upload_session = UploadSession(
-                id=session_id,
-                workspace_id=upload_session.workspace_id,
-                started_at=upload_session.started_at,
-                completed_at=upload_session.completed_at,
-                uploaded_documents=list(upload_session.uploaded_documents),
-            )
-            self._active_session = upload_session
+        with self._lock:
+            upload_session = self._require_active_session()
+            if session_id is not None and session_id != upload_session.id:
+                upload_session = UploadSession(
+                    id=session_id,
+                    workspace_id=upload_session.workspace_id,
+                    started_at=upload_session.started_at,
+                    completed_at=upload_session.completed_at,
+                    uploaded_documents=list(upload_session.uploaded_documents),
+                )
+                self._active_session = upload_session
 
-        upload_session.uploaded_documents.append(document)
-        return upload_session
+            upload_session.uploaded_documents.append(document)
+            return upload_session
 
     def finalize_upload(
         self,
@@ -75,9 +80,10 @@ class UploadService:
     ) -> UploadSession:
         """Mark the active upload session as completed."""
 
-        upload_session = self._require_active_session()
-        upload_session.completed_at = completed_at or datetime.now(tz=UTC)
-        return upload_session
+        with self._lock:
+            upload_session = self._require_active_session()
+            upload_session.completed_at = completed_at or datetime.now(tz=UTC)
+            return upload_session
 
     def _require_active_session(self) -> UploadSession:
         """Return the active session or raise an error if none exists."""

@@ -8,13 +8,12 @@ from __future__ import annotations
 
 from .metadata_service import MetadataService
 from .search_service import SearchService
+from .upload_rate_limiter import UploadRateLimiter
 from .upload_service import UploadService
 
 __all__: list[str] = [
     "MetadataService",
     "SearchService",
+    "UploadRateLimiter",
     "UploadService",
-    "upload_service",
-    "search_service",
-    "metadata_service",
 ]

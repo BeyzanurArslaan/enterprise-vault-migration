@@ -11,8 +11,10 @@ execution without mutating the target system.
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import datetime
+from functools import partial
 from uuid import NAMESPACE_URL, uuid5
 
 from application.dto import UploadResult
@@ -100,118 +102,83 @@ class UploadItemsStep(PipelineStep):
         item_results: list[UploadResult] = []
         uploaded_document_ids: list[str] = []
         seen_source_identifiers: set[str] = set()
+        emitted_source_identifiers: set[str] = set()
         current_document: TransformedDocument | None = None
         dry_run_mode = context.execution_context.configuration.dry_run
+        worker_count = context.execution_context.configuration.upload_worker_count
+        transformed_documents = tuple(context.transformation_result.transformed_documents)
+        unique_documents: list[TransformedDocument] = []
 
-        for transformed_document in context.transformation_result.transformed_documents:
-            current_document = transformed_document
-            item_result = self._build_item_result(
-                document=transformed_document,
-                success=False,
-                error_message=None,
-            )
+        for transformed_document in transformed_documents:
             if transformed_document.source_identifier in seen_source_identifiers:
+                continue
+
+            seen_source_identifiers.add(transformed_document.source_identifier)
+            unique_documents.append(transformed_document)
+
+        if (
+            len(unique_documents) > 1
+            and worker_count > 1
+            and not dry_run_mode
+            and perform_target_upload
+        ):
+            process_document = partial(
+                self._process_transformed_document,
+                perform_target_upload=True,
+                dry_run_mode=dry_run_mode,
+            )
+            with ThreadPoolExecutor(max_workers=worker_count) as executor:
+                unique_results = list(executor.map(process_document, unique_documents))
+        elif len(unique_documents) > 1 and worker_count > 1:
+            process_document = partial(
+                self._process_transformed_document,
+                perform_target_upload=perform_target_upload,
+                dry_run_mode=dry_run_mode,
+            )
+            with ThreadPoolExecutor(max_workers=worker_count) as executor:
+                unique_results = list(executor.map(process_document, unique_documents))
+        else:
+            unique_results = [
+                self._process_transformed_document(
+                    transformed_document,
+                    perform_target_upload=perform_target_upload,
+                    dry_run_mode=dry_run_mode,
+                )
+                for transformed_document in unique_documents
+            ]
+
+        unique_result_by_identifier = {
+            document.source_identifier: result
+            for document, result in zip(unique_documents, unique_results, strict=True)
+        }
+
+        for transformed_document in transformed_documents:
+            current_document = transformed_document
+            if transformed_document.source_identifier in emitted_source_identifiers:
                 skipped_documents.append(transformed_document)
                 item_results.append(
-                    replace(
-                        item_result,
+                    self._build_item_result(
+                        document=transformed_document,
                         success=False,
-                        target_identifier=transformed_document.source_identifier,
                         error_message="Skipped duplicate transformed document",
                     )
                 )
                 continue
 
-            seen_source_identifiers.add(transformed_document.source_identifier)
-            if dry_run_mode:
+            emitted_source_identifiers.add(transformed_document.source_identifier)
+            item_result = unique_result_by_identifier[transformed_document.source_identifier]
+            item_results.append(item_result)
+            if item_result.dry_run:
                 skipped_documents.append(transformed_document)
-                item_results.append(
-                    replace(
-                        item_result,
-                        success=True,
-                        target_identifier=None,
-                        error_message=None,
-                        dry_run=True,
-                    )
-                )
                 continue
 
-            if perform_target_upload:
-                try:
-                    upload_response = self._target_port.upload_archived_file(
-                        transformed_document.source_identifier,
-                        transformed_document,
-                    )
-                except IdempotencyConflictError as exc:
-                    failed_documents.append(transformed_document)
-                    item_results.append(
-                        replace(
-                            item_result,
-                            success=False,
-                            target_identifier=None,
-                            error_message=str(exc),
-                        )
-                    )
-                    continue
-
-                idempotent_replay = False
-                target_identifier = transformed_document.source_identifier
-                if isinstance(upload_response, UploadResult):
-                    if not upload_response.success:
-                        failed_documents.append(transformed_document)
-                        item_results.append(
-                            replace(
-                                item_result,
-                                success=False,
-                                target_identifier=upload_response.target_identifier,
-                                error_message=upload_response.error_message,
-                            )
-                        )
-                        continue
-
-                    idempotent_replay = upload_response.idempotent_replay
-                    target_identifier = (
-                        upload_response.target_identifier or transformed_document.source_identifier
-                    )
-
-                uploaded_documents.append(transformed_document)
-                uploaded_document_ids.append(target_identifier)
-                item_results.append(
-                    replace(
-                        item_result,
-                        success=True,
-                        target_identifier=target_identifier,
-                        error_message=None,
-                        idempotent_replay=idempotent_replay,
-                    )
-                )
-                continue
-
-            target_document = self._target_port.get_uploaded_document(
-                transformed_document.source_identifier,
-            )
-            if target_document is None:
+            if not item_result.success:
                 failed_documents.append(transformed_document)
-                item_results.append(
-                    replace(
-                        item_result,
-                        success=False,
-                        target_identifier=None,
-                        error_message="Uploaded document not found in target storage",
-                    )
-                )
                 continue
 
             uploaded_documents.append(transformed_document)
-            uploaded_document_ids.append(transformed_document.source_identifier)
-            item_results.append(
-                replace(
-                    item_result,
-                    success=True,
-                    target_identifier=transformed_document.source_identifier,
-                    error_message=None,
-                    idempotent_replay=False,
-                )
+            uploaded_document_ids.append(
+                item_result.target_identifier or transformed_document.source_identifier,
             )
 
         if perform_target_upload:
@@ -238,6 +205,7 @@ class UploadItemsStep(PipelineStep):
             ),
             transformation_result=transformation_result,
             upload_result=upload_result,
+            configuration=context.execution_context.configuration,
             started_at=started_at,
             completed_at=completed_at,
         )
@@ -293,6 +261,84 @@ class UploadItemsStep(PipelineStep):
             execution_report=updated_report,
             transformation_result=transformation_result,
             upload_result=upload_result,
+        )
+
+    def _process_transformed_document(
+        self,
+        transformed_document: TransformedDocument,
+        *,
+        perform_target_upload: bool,
+        dry_run_mode: bool,
+    ) -> UploadResult:
+        """Upload or reconstruct a single transformed document outcome."""
+
+        item_result = self._build_item_result(
+            document=transformed_document,
+            success=False,
+            error_message=None,
+        )
+        if dry_run_mode:
+            return replace(
+                item_result,
+                success=True,
+                target_identifier=None,
+                error_message=None,
+                dry_run=True,
+            )
+
+        if perform_target_upload:
+            try:
+                upload_response = self._target_port.upload_archived_file(
+                    transformed_document.source_identifier,
+                    transformed_document,
+                )
+            except IdempotencyConflictError as exc:
+                return replace(
+                    item_result,
+                    success=False,
+                    target_identifier=None,
+                    error_message=str(exc),
+                )
+
+            idempotent_replay = False
+            target_identifier = transformed_document.source_identifier
+            if isinstance(upload_response, UploadResult):
+                if not upload_response.success:
+                    return replace(
+                        item_result,
+                        success=False,
+                        target_identifier=upload_response.target_identifier,
+                        error_message=upload_response.error_message,
+                    )
+
+                idempotent_replay = upload_response.idempotent_replay
+                target_identifier = upload_response.target_identifier or target_identifier
+
+            return replace(
+                item_result,
+                success=True,
+                target_identifier=target_identifier,
+                error_message=None,
+                idempotent_replay=idempotent_replay,
+            )
+
+        target_document = self._target_port.get_uploaded_document(
+            transformed_document.source_identifier,
+        )
+        if target_document is None:
+            return replace(
+                item_result,
+                success=False,
+                target_identifier=None,
+                error_message="Uploaded document not found in target storage",
+            )
+
+        return replace(
+            item_result,
+            success=True,
+            target_identifier=transformed_document.source_identifier,
+            error_message=None,
+            idempotent_replay=False,
         )
 
     def _build_step_context(self, context: ExecutionContext) -> MigrationStepContext:
@@ -365,6 +411,7 @@ class UploadItemsStep(PipelineStep):
         metrics: MigrationMetrics | None,
         transformation_result: TransformationResult,
         upload_result: UploadBatchResult,
+        configuration: MigrationConfiguration,
         started_at: datetime,
         completed_at: datetime,
     ) -> MigrationMetrics:
@@ -398,6 +445,10 @@ class UploadItemsStep(PipelineStep):
         processed_bytes = sum(document.size_bytes for document in all_documents)
         throughput = processed_items / duration_seconds if duration_seconds > 0.0 else 0.0
         average_item_size = processed_bytes // processed_items if processed_items > 0 else 0
+        worker_count = configuration.upload_worker_count
+        worker_utilization = (
+            min(processed_items, worker_count) / worker_count if processed_items > 0 else 0.0
+        )
 
         if metrics is not None:
             return replace(
@@ -414,6 +465,10 @@ class UploadItemsStep(PipelineStep):
                 retried_items=0,
                 idempotent_replays=idempotent_replays,
                 dry_run_items=dry_run_items,
+                throttled_uploads=metrics.throttled_uploads,
+                retry_after_count=metrics.retry_after_count,
+                temporary_failures=metrics.temporary_failures,
+                worker_utilization=worker_utilization,
                 uploaded_items=unique_uploaded_items,
                 verification_failures=0,
                 total_bytes=processed_bytes,
@@ -436,6 +491,10 @@ class UploadItemsStep(PipelineStep):
             retried_items=0,
             idempotent_replays=idempotent_replays,
             dry_run_items=dry_run_items,
+            throttled_uploads=0,
+            retry_after_count=0,
+            temporary_failures=0,
+            worker_utilization=worker_utilization,
             uploaded_items=unique_uploaded_items,
             verification_failures=0,
             total_bytes=processed_bytes,
