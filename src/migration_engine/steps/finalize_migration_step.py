@@ -8,6 +8,7 @@ layer and only coordinates structural completion metadata.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import replace
 from datetime import datetime
 
@@ -16,9 +17,12 @@ from ..contracts import ExecutionContext, ExecutionReport, PipelineStep, Progres
 from ..execution_result import ExecutionResult
 from ..metrics import MigrationMetrics
 from ..progress_tracker import ProgressTracker
+from ..reconciliation import ReconciliationResult
 from ..state_machine import MigrationState, MigrationStateMachine
 from ..step_context import MigrationStepContext
 from ..transformation import TransformedDocument
+from ..upload import UploadBatchResult
+from ..verification import VerificationResult
 
 
 class FinalizeMigrationStep(PipelineStep):
@@ -59,6 +63,7 @@ class FinalizeMigrationStep(PipelineStep):
         state_machine = self._resolve_state_machine(context, failed_execution=failed_execution)
         final_state = self._advance_state_machine(state_machine, failed_execution=failed_execution)
         current_document = self._resolve_current_document(context)
+        reconciliation = self._resolve_reconciliation(context)
         final_metrics = self._resolve_metrics(
             metrics=(
                 context.execution_context.metrics
@@ -69,6 +74,7 @@ class FinalizeMigrationStep(PipelineStep):
                 )
             ),
             context=context,
+            reconciliation=reconciliation,
             started_at=started_at,
             completed_at=completed_at,
         )
@@ -88,6 +94,7 @@ class FinalizeMigrationStep(PipelineStep):
                 )
             ),
             metrics=final_metrics,
+            reconciliation=reconciliation,
             configuration=context.execution_context.configuration,
             started_at=started_at,
             completed_at=completed_at,
@@ -255,6 +262,70 @@ class FinalizeMigrationStep(PipelineStep):
 
         return ("Migration execution failed.",)
 
+    def _resolve_reconciliation(
+        self,
+        context: MigrationStepContext,
+    ) -> ReconciliationResult:
+        """Build the final reconciliation summary for the migration run."""
+
+        transformed_documents = (
+            context.transformation_result.transformed_documents
+            if context.transformation_result is not None
+            else ()
+        )
+        upload_result = context.upload_result
+        verification_result = context.verification_result
+        dry_run_mode = context.execution_context.configuration.dry_run or (
+            upload_result is not None
+            and any(result.dry_run for result in upload_result.item_results)
+        )
+        expected_items = len(transformed_documents)
+        uploaded_items = self._resolve_uploaded_items(upload_result)
+        verified_items = (
+            verification_result.verified_count if verification_result is not None else 0
+        )
+        idempotent_replays = self._resolve_idempotent_replays(upload_result)
+        dry_run_items = self._resolve_dry_run_items(upload_result)
+        checksum_mismatches = (
+            verification_result.checksum_mismatches if verification_result is not None else ()
+        )
+        missing_items = self._resolve_missing_items(
+            transformed_documents=transformed_documents,
+            upload_result=upload_result,
+            verification_result=verification_result,
+            dry_run_mode=dry_run_mode,
+        )
+        unexpected_items: tuple[str, ...] = ()
+        idempotent_replays = self._resolve_idempotent_replays(upload_result)
+        is_reconciled = self._is_reconciled(
+            expected_items=expected_items,
+            uploaded_items=uploaded_items,
+            verified_items=verified_items,
+            idempotent_replays=idempotent_replays,
+            dry_run_items=dry_run_items,
+            missing_items=missing_items,
+            checksum_mismatches=checksum_mismatches,
+            unexpected_items=unexpected_items,
+            dry_run_mode=dry_run_mode,
+        )
+        status = (
+            "dry_run_reconciled"
+            if dry_run_mode and is_reconciled
+            else ("reconciled" if is_reconciled else "needs_review")
+        )
+        return ReconciliationResult(
+            expected_items=expected_items,
+            uploaded_items=uploaded_items,
+            verified_items=verified_items,
+            idempotent_replays=idempotent_replays,
+            dry_run_items=dry_run_items,
+            missing_items=missing_items,
+            unexpected_items=unexpected_items,
+            checksum_mismatches=checksum_mismatches,
+            status=status,
+            is_reconciled=is_reconciled,
+        )
+
     def _resolve_current_document(
         self,
         context: MigrationStepContext,
@@ -325,6 +396,7 @@ class FinalizeMigrationStep(PipelineStep):
         *,
         metrics: MigrationMetrics | None,
         context: MigrationStepContext,
+        reconciliation: ReconciliationResult,
         started_at: datetime,
         completed_at: datetime,
     ) -> MigrationMetrics:
@@ -339,11 +411,7 @@ class FinalizeMigrationStep(PipelineStep):
             context.upload_result is not None
             and any(result.dry_run for result in context.upload_result.item_results)
         )
-        uploaded_items = (
-            len(context.upload_result.uploaded_documents)
-            if context.upload_result is not None
-            else 0
-        )
+        uploaded_items = reconciliation.uploaded_items
         verification_failures = (
             context.verification_result.failed_count
             if context.verification_result is not None
@@ -353,17 +421,13 @@ class FinalizeMigrationStep(PipelineStep):
         duration_seconds = max((completed_at - started_at).total_seconds(), 0.0)
         throughput = processed_items / duration_seconds if duration_seconds > 0.0 else 0.0
         average_item_size = processed_bytes // processed_items if processed_items > 0 else 0
-        dry_run_items = (
-            context.execution_context.metrics.dry_run_items
-            if context.execution_context.metrics is not None
-            else sum(
-                1
-                for result in (
-                    context.upload_result.item_results if context.upload_result is not None else ()
-                )
-                if result.dry_run
-            )
+        dry_run_items = reconciliation.dry_run_items
+        idempotent_replays = reconciliation.idempotent_replays
+        reconciled_items = (
+            reconciliation.dry_run_items if dry_run_mode else reconciliation.verified_items
         )
+        missing_items = len(reconciliation.missing_items)
+        checksum_mismatches = len(reconciliation.checksum_mismatches)
 
         if metrics is not None:
             return replace(
@@ -378,6 +442,10 @@ class FinalizeMigrationStep(PipelineStep):
                 failed_items=0 if dry_run_mode else failed_items,
                 skipped_items=skipped_items,
                 retried_items=0,
+                idempotent_replays=idempotent_replays,
+                reconciled_items=reconciled_items,
+                missing_items=missing_items,
+                checksum_mismatches=checksum_mismatches,
                 uploaded_items=0 if dry_run_mode else uploaded_items,
                 verification_failures=0 if dry_run_mode else verification_failures,
                 dry_run_items=dry_run_items,
@@ -399,6 +467,10 @@ class FinalizeMigrationStep(PipelineStep):
             failed_items=0 if dry_run_mode else failed_items,
             skipped_items=skipped_items,
             retried_items=0,
+            idempotent_replays=idempotent_replays,
+            reconciled_items=reconciled_items,
+            missing_items=missing_items,
+            checksum_mismatches=checksum_mismatches,
             uploaded_items=0 if dry_run_mode else uploaded_items,
             verification_failures=0 if dry_run_mode else verification_failures,
             dry_run_items=dry_run_items,
@@ -412,6 +484,7 @@ class FinalizeMigrationStep(PipelineStep):
         *,
         report: ExecutionReport | None,
         metrics: MigrationMetrics,
+        reconciliation: ReconciliationResult,
         configuration: MigrationConfiguration,
         started_at: datetime,
         completed_at: datetime,
@@ -429,6 +502,7 @@ class FinalizeMigrationStep(PipelineStep):
                 duration_seconds=duration_seconds,
                 completed=not failed_execution,
                 metrics=metrics,
+                reconciliation=reconciliation,
                 archive_names=configuration.archive_names,
                 folder_paths=configuration.folder_paths,
                 start_date=configuration.start_date,
@@ -442,10 +516,116 @@ class FinalizeMigrationStep(PipelineStep):
             duration_seconds=duration_seconds,
             completed=not failed_execution,
             metrics=metrics,
+            reconciliation=reconciliation,
             archive_names=configuration.archive_names,
             folder_paths=configuration.folder_paths,
             start_date=configuration.start_date,
             end_date=configuration.end_date,
+        )
+
+    def _resolve_uploaded_items(
+        self,
+        upload_result: UploadBatchResult | None,
+    ) -> int:
+        """Return the number of newly uploaded target documents."""
+
+        if upload_result is None:
+            return 0
+
+        return sum(
+            1
+            for item_result in upload_result.item_results
+            if item_result.success and not item_result.idempotent_replay and not item_result.dry_run
+        )
+
+    def _resolve_idempotent_replays(
+        self,
+        upload_result: UploadBatchResult | None,
+    ) -> int:
+        """Return the number of upload replays that reused an existing target document."""
+
+        if upload_result is None:
+            return 0
+
+        return sum(1 for item_result in upload_result.item_results if item_result.idempotent_replay)
+
+    def _resolve_dry_run_items(
+        self,
+        upload_result: UploadBatchResult | None,
+    ) -> int:
+        """Return the number of dry-run uploads skipped during reconciliation."""
+
+        if upload_result is None:
+            return 0
+
+        return sum(1 for item_result in upload_result.item_results if item_result.dry_run)
+
+    def _resolve_missing_items(
+        self,
+        *,
+        transformed_documents: Sequence[TransformedDocument],
+        upload_result: UploadBatchResult | None,
+        verification_result: VerificationResult | None,
+        dry_run_mode: bool,
+    ) -> tuple[str, ...]:
+        """Return the ordered identifiers that are missing from the target outcome."""
+
+        if dry_run_mode:
+            return ()
+
+        missing_document_ids: set[str] = set()
+        if verification_result is not None:
+            missing_document_ids.update(verification_result.missing_document_ids)
+
+        failed_upload_ids: set[str] = set()
+        if upload_result is not None:
+            failed_upload_ids.update(
+                document.source_identifier for document in upload_result.failed_documents
+            )
+
+        missing_items: list[str] = []
+        seen_missing: set[str] = set()
+        for transformed_document in transformed_documents:
+            source_identifier = transformed_document.source_identifier
+            if source_identifier in seen_missing:
+                continue
+
+            if source_identifier in missing_document_ids or source_identifier in failed_upload_ids:
+                missing_items.append(source_identifier)
+                seen_missing.add(source_identifier)
+
+        return tuple(missing_items)
+
+    def _is_reconciled(
+        self,
+        *,
+        expected_items: int,
+        uploaded_items: int,
+        verified_items: int,
+        idempotent_replays: int,
+        dry_run_items: int,
+        missing_items: tuple[str, ...],
+        checksum_mismatches: tuple[str, ...],
+        unexpected_items: tuple[str, ...],
+        dry_run_mode: bool,
+    ) -> bool:
+        """Return whether the final migration scope reconciled successfully."""
+
+        if dry_run_mode:
+            return (
+                expected_items == dry_run_items
+                and uploaded_items == 0
+                and not missing_items
+                and not checksum_mismatches
+                and not unexpected_items
+            )
+
+        return (
+            expected_items == verified_items
+            and uploaded_items + idempotent_replays <= expected_items
+            and not missing_items
+            and not checksum_mismatches
+            and not unexpected_items
         )
 
     def _resolve_tracker(

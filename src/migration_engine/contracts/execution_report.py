@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from ..metrics import MigrationMetrics
+from ..reconciliation import ReconciliationResult
 
 
 @dataclass(slots=True, frozen=True)
@@ -24,6 +25,7 @@ class ExecutionReport:
     duration_seconds: float
     completed: bool
     metrics: MigrationMetrics | None = None
+    reconciliation: ReconciliationResult | None = None
     archive_names: tuple[str, ...] | None = None
     folder_paths: tuple[str, ...] | None = None
     start_date: datetime | None = None

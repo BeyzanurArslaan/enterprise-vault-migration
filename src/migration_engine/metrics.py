@@ -6,7 +6,9 @@ The ``idempotent_replays`` counter records successful upload replays that
 reused an existing target document instead of creating a new record. The
 ``dry_run_items`` counter records uploads that were intentionally skipped in
 analysis-only execution mode. The ``filtered_archives`` and ``filtered_items``
-fields record source entities excluded by configured migration filters.
+fields record source entities excluded by configured migration filters. The
+``reconciled_items``, ``missing_items``, and ``checksum_mismatches`` counters
+summarize reconciliation outcomes without duplicating the richer result model.
 """
 
 from __future__ import annotations
@@ -35,6 +37,9 @@ class MigrationMetrics:
     retried_items: int = 0
     idempotent_replays: int = 0
     dry_run_items: int = 0
+    reconciled_items: int = 0
+    missing_items: int = 0
+    checksum_mismatches: int = 0
     uploaded_items: int = 0
     verification_failures: int = 0
     total_bytes: int = 0

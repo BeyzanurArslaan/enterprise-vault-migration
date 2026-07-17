@@ -205,6 +205,7 @@ def _build_context(
     upload_result: UploadBatchResult | None = None,
     verification_result: VerificationResult | None = None,
     report: ExecutionReport | None = None,
+    configuration: MigrationConfiguration | None = None,
     state: MigrationState = MigrationState.VERIFYING,
     execution_state: MigrationState | None = None,
 ) -> MigrationStepContext:
@@ -214,6 +215,7 @@ def _build_context(
     completed_at = started_at + timedelta(seconds=5)
     metrics = _build_metrics()
     snapshot = _build_snapshot()
+    configuration = configuration or MigrationConfiguration()
     tracker = ProgressTracker(
         snapshot=snapshot,
         metrics=metrics,
@@ -222,7 +224,7 @@ def _build_context(
     )
     execution_context = ExecutionContext(
         migration_id="migration-1",
-        configuration=MigrationConfiguration(),
+        configuration=configuration,
         started_at=started_at,
         current_step="verify",
         metrics=metrics,
@@ -301,6 +303,17 @@ def test_finalize_migration_step_completes_successfully() -> None:
     assert execution_report is not None
     assert execution_report.completed is True
     assert execution_report.failed_steps == 0
+    reconciliation = execution_report.reconciliation
+    assert reconciliation is not None
+    assert reconciliation.expected_items == 2
+    assert reconciliation.uploaded_items == 2
+    assert reconciliation.verified_items == 2
+    assert reconciliation.idempotent_replays == 0
+    assert reconciliation.dry_run_items == 0
+    assert reconciliation.missing_items == ()
+    assert reconciliation.checksum_mismatches == ()
+    assert reconciliation.status == "reconciled"
+    assert reconciliation.is_reconciled is True
     assert execution_report.metrics == execution_result.metrics
 
 
@@ -441,6 +454,140 @@ def test_finalize_migration_step_records_verification_failures_without_erasing_s
     assert progress_tracker.current_snapshot.successful_items == 1
     assert progress_tracker.current_snapshot.failed_items == 1
     assert metrics.verification_failures == 1
+    assert execution_report.reconciliation is not None
+
+
+def test_finalize_migration_step_records_reconciliation_summary() -> None:
+    """The step should summarize reconciliation outcomes deterministically."""
+
+    started_at = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
+    completed_at = started_at + timedelta(seconds=5)
+    first_document = _build_transformed_document(
+        source_identifier="message-1",
+        archive_name="Archive One",
+        mailbox_address="alice@example.com",
+        subject="Quarterly Report",
+    )
+    second_document = _build_transformed_document(
+        source_identifier="message-2",
+        archive_name="Archive One",
+        mailbox_address="alice@example.com",
+        subject="Annual Report",
+    )
+    transformation_result = _build_transformation_result(
+        (first_document, second_document),
+        started_at=started_at,
+        completed_at=completed_at,
+    )
+    upload_result = _build_upload_result(
+        (first_document,),
+        failed_documents=(second_document,),
+        started_at=started_at,
+        completed_at=completed_at,
+    )
+    verification_result = _build_verification_result(
+        verified_documents=(first_document,),
+        failed_document_ids=("message-2",),
+        missing_document_ids=("message-2",),
+        checksum_mismatches=("message-2",),
+        started_at=started_at,
+        completed_at=completed_at,
+    )
+    context = _build_context(
+        transformation_result=transformation_result,
+        upload_result=upload_result,
+        verification_result=verification_result,
+        report=_build_execution_report(metrics=_build_metrics(), completed=False),
+    )
+
+    updated_context = FinalizeMigrationStep().finalize_migration(context)
+
+    execution_report = updated_context.execution_report
+    assert execution_report is not None
+    reconciliation = execution_report.reconciliation
+    assert reconciliation is not None
+    assert reconciliation.expected_items == 2
+    assert reconciliation.uploaded_items == 1
+    assert reconciliation.verified_items == 1
+    assert reconciliation.idempotent_replays == 0
+    assert reconciliation.dry_run_items == 0
+    assert reconciliation.missing_items == ("message-2",)
+    assert reconciliation.checksum_mismatches == ("message-2",)
+    assert reconciliation.unexpected_items == ()
+    assert reconciliation.status == "needs_review"
+    assert reconciliation.is_reconciled is False
+    metrics = updated_context.execution_context.metrics
+    assert metrics is not None
+    assert metrics.reconciled_items == 1
+    assert metrics.missing_items == 1
+    assert metrics.checksum_mismatches == 1
+    assert metrics.idempotent_replays == 0
+
+
+def test_finalize_migration_step_handles_dry_run_reconciliation() -> None:
+    """The step should mark reconciliation as dry-run aware when no target writes occur."""
+
+    started_at = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
+    completed_at = started_at + timedelta(seconds=5)
+    document = _build_transformed_document(
+        source_identifier="message-1",
+        archive_name="Archive One",
+        mailbox_address="alice@example.com",
+        subject="Quarterly Report",
+    )
+    transformation_result = _build_transformation_result(
+        (document,),
+        started_at=started_at,
+        completed_at=completed_at,
+    )
+    upload_result = UploadBatchResult(
+        uploaded_documents=(),
+        failed_documents=(),
+        skipped_documents=(document,),
+        uploaded_document_ids=(),
+        item_results=(
+            UploadResult(
+                item_id=MigrationItemId(uuid5(NAMESPACE_URL, document.source_identifier)),
+                success=True,
+                target_identifier=None,
+                error_message=None,
+                idempotent_replay=False,
+                dry_run=True,
+            ),
+        ),
+        started_at=started_at,
+        completed_at=completed_at,
+    )
+    verification_result = _build_verification_result(
+        verified_documents=(),
+        started_at=started_at,
+        completed_at=completed_at,
+    )
+    context = _build_context(
+        transformation_result=transformation_result,
+        upload_result=upload_result,
+        verification_result=verification_result,
+        configuration=MigrationConfiguration(dry_run=True),
+        report=_build_execution_report(metrics=_build_metrics(), completed=False),
+    )
+
+    updated_context = FinalizeMigrationStep().finalize_migration(context)
+
+    execution_report = updated_context.execution_report
+    assert execution_report is not None
+    reconciliation = execution_report.reconciliation
+    assert reconciliation is not None
+    assert reconciliation.expected_items == 1
+    assert reconciliation.uploaded_items == 0
+    assert reconciliation.verified_items == 0
+    assert reconciliation.dry_run_items == 1
+    assert reconciliation.status == "dry_run_reconciled"
+    assert reconciliation.is_reconciled is True
+    metrics = updated_context.execution_context.metrics
+    assert metrics is not None
+    assert metrics.dry_run_items == 1
+    assert metrics.uploaded_items == 0
+    assert metrics.reconciled_items == 1
 
 
 def test_finalize_migration_step_transitions_to_failed_when_context_is_failed() -> None:
