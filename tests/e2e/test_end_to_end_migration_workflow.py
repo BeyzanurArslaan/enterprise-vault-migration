@@ -14,9 +14,12 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from itertools import count
 from pathlib import Path
+from uuid import NAMESPACE_URL, uuid5
 
 from adapters.source import MockEnterpriseVaultSourceAdapter
 from adapters.target import MockStorionXTargetAdapter
+from application.dto import UploadResult
+from domain.value_objects.identifiers import MigrationItemId
 from migration_engine.execution_result import ExecutionResult
 from migration_engine.pipeline import MigrationPipeline
 from migration_engine.runner import PipelineRunner
@@ -33,7 +36,6 @@ from migration_engine.transformation import TransformedDocument
 from mock_ev.builders import EnterpriseVaultBuilder
 from mock_ev.entities import VaultStore
 from mock_ev.generators import ArchiveGenerator
-from mock_storionx.entities import Document
 from mock_storionx.services import UploadService
 from mock_storionx.storage import DocumentStorage
 from ports import StorionXTargetPort
@@ -83,12 +85,25 @@ class _FailingMockStorionXTargetAdapter(MockStorionXTargetAdapter):
         )
         self._fail_on_identifier = fail_on_identifier
 
-    def upload_archived_file(self, archived_file_id: str, payload: object) -> Document:
+    def upload_archived_file(
+        self,
+        archived_file_id: str,
+        payload: object,
+    ) -> UploadResult:
         """Upload documents while failing on the configured identifier."""
 
         if archived_file_id == self._fail_on_identifier:
-            message = f"upload failed for {archived_file_id}"
-            raise RuntimeError(message)
+            if not isinstance(payload, TransformedDocument):
+                message = "Unexpected payload"
+                raise TypeError(message)
+
+            return UploadResult(
+                item_id=MigrationItemId(value=uuid5(NAMESPACE_URL, payload.source_identifier)),
+                success=False,
+                target_identifier=None,
+                error_message=f"upload failed for {archived_file_id}",
+                idempotent_replay=False,
+            )
 
         return super().upload_archived_file(archived_file_id, payload)
 
@@ -490,12 +505,15 @@ def test_source_and_target_adapter_contracts_remain_target_neutral() -> None:
         modified_at=archive.mailboxes[0].mail_items[0].modified_at,
     )
 
-    stored_document = target_adapter.upload_archived_file(
+    upload_result = target_adapter.upload_archived_file(
         archive_document.source_identifier,
         archive_document,
     )
 
-    assert isinstance(stored_document, Document)
+    stored_document = target_adapter.document_storage.get(archive_document.source_identifier)
+    assert stored_document is not None
+    assert upload_result.success is True
+    assert upload_result.idempotent_replay is False
     assert (
         target_adapter.get_uploaded_document(
             archive_document.source_identifier,

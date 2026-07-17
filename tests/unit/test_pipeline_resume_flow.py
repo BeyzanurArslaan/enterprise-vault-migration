@@ -8,6 +8,7 @@ from itertools import count
 
 from adapters.database import InMemoryCheckpointRepository
 from adapters.target import MockStorionXTargetAdapter
+from application.dto import UploadResult
 from application.services import CheckpointService
 from migration_engine.contracts import PipelineStep
 from migration_engine.pipeline import MigrationPipeline
@@ -22,7 +23,6 @@ from migration_engine.steps import (
     VerifyItemsStep,
 )
 from mock_ev.entities import Archive, Mailbox, MailItem, RetentionPolicy, VaultStore
-from mock_storionx.entities import Document
 from mock_storionx.services import UploadService
 from mock_storionx.storage import DocumentStorage
 from ports.identifier_generator_port import IdentifierGeneratorPort
@@ -102,7 +102,11 @@ class _CountingTargetAdapter(MockStorionXTargetAdapter):
         )
         self.upload_calls = 0
 
-    def upload_archived_file(self, archived_file_id: str, payload: object) -> Document:
+    def upload_archived_file(
+        self,
+        archived_file_id: str,
+        payload: object,
+    ) -> UploadResult:
         """Count upload attempts before delegating to the concrete adapter."""
 
         self.upload_calls += 1

@@ -11,10 +11,13 @@ from __future__ import annotations
 import ast
 from datetime import UTC, datetime
 from pathlib import Path
+from uuid import NAMESPACE_URL, uuid5
 
 import pytest
 
 from adapters.target import MockStorionXTargetAdapter
+from application.dto import UploadResult
+from domain.value_objects.identifiers import MigrationItemId
 from migration_engine.configuration import MigrationConfiguration
 from migration_engine.contracts import (
     ExecutionContext,
@@ -39,7 +42,6 @@ from migration_engine.steps import (
 )
 from migration_engine.transformation import TransformedDocument
 from mock_ev.entities import Archive, Attachment, Mailbox, MailItem, RetentionPolicy, VaultStore
-from mock_storionx.entities import Document
 
 
 def _build_retention_policy() -> RetentionPolicy:
@@ -347,12 +349,25 @@ def test_pipeline_runner_preserves_partial_upload_failure_and_finalizes() -> Non
     class _FailingUploadAdapter(MockStorionXTargetAdapter):
         """Fail one deterministic upload while keeping successful uploads."""
 
-        def upload_archived_file(self, archived_file_id: str, payload: object) -> Document:
-            """Raise for one predetermined source identifier."""
+        def upload_archived_file(
+            self,
+            archived_file_id: str,
+            payload: object,
+        ) -> UploadResult:
+            """Return a structural failure for one predetermined source identifier."""
 
             if archived_file_id == "message-Annual-Report":
-                message = "upload failed for message-Annual-Report"
-                raise RuntimeError(message)
+                if not isinstance(payload, TransformedDocument):
+                    message = "Unexpected payload"
+                    raise TypeError(message)
+
+                return UploadResult(
+                    item_id=MigrationItemId(value=uuid5(NAMESPACE_URL, payload.source_identifier)),
+                    success=False,
+                    target_identifier=None,
+                    error_message="upload failed for message-Annual-Report",
+                    idempotent_replay=False,
+                )
 
             return super().upload_archived_file(archived_file_id, payload)
 

@@ -2,14 +2,23 @@
 
 This module implements the storionX target port by mapping target-neutral
 migration documents to the mock storionX entities and storing them in the
-existing in-memory mock target services.
+existing in-memory mock target services. The adapter enforces single-process
+idempotency by treating the transformed document's stable ``source_identifier``
+as the idempotency key for the mock target scope. Replays that match the
+existing checksum and metadata return a neutral replay result without creating
+duplicate target records. Conflicting replays raise a domain-level conflict
+error so the migration engine can surface the failure structurally. Production
+persistence would need a unique constraint on the idempotency key.
 """
 
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from uuid import uuid4
+from uuid import NAMESPACE_URL, uuid4, uuid5
 
+from application.dto import UploadResult
+from domain.exceptions import IdempotencyConflictError
+from domain.value_objects.identifiers import MigrationItemId
 from migration_engine.transformation import TransformedDocument
 from mock_storionx.entities import Document, Metadata, UploadSession
 from mock_storionx.services import UploadService
@@ -37,7 +46,6 @@ class MockStorionXTargetAdapter(StorionXTargetPort):
         self.session_id = session_id
         self.started_at = started_at or datetime.now(tz=UTC)
         self._active_session_id: str | None = None
-        self._uploaded_document_ids: set[str] = set()
         self._uploaded_documents: dict[str, TransformedDocument] = {}
 
     def create_archive(self, archive_id: str) -> str:
@@ -46,34 +54,51 @@ class MockStorionXTargetAdapter(StorionXTargetPort):
         self._ensure_session()
         return archive_id
 
-    def upload_mail_item(self, mail_item_id: str, payload: object) -> Document:
+    def upload_mail_item(self, mail_item_id: str, payload: object) -> UploadResult:
         """Upload a transformed mail item into the mock storionX target."""
 
         return self.upload_archived_file(mail_item_id, payload)
 
-    def upload_attachment(self, attachment_id: str, payload: object) -> Document:
+    def upload_attachment(self, attachment_id: str, payload: object) -> UploadResult:
         """Upload a transformed attachment into the mock storionX target."""
 
         return self.upload_archived_file(attachment_id, payload)
 
-    def upload_archived_file(self, archived_file_id: str, payload: object) -> Document:
+    def upload_archived_file(self, archived_file_id: str, payload: object) -> UploadResult:
         """Upload a transformed archived file into the mock storionX target."""
 
         transformed_document = self._require_transformed_document(payload)
         stored_document = self._map_document(transformed_document)
         existing_document = self.document_storage.get(stored_document.id)
         if existing_document is not None:
-            return existing_document
+            if existing_document != stored_document:
+                message = (
+                    "Idempotency conflict for key "
+                    f"{stored_document.id!r}: existing checksum "
+                    f"{existing_document.checksum!r} does not match "
+                    f"received checksum {stored_document.checksum!r}."
+                )
+                raise IdempotencyConflictError(message)
+
+            self._uploaded_documents[stored_document.id] = transformed_document
+            return self._build_upload_result(
+                transformed_document=transformed_document,
+                target_identifier=stored_document.id,
+                idempotent_replay=True,
+            )
 
         self._ensure_session()
         self.document_storage.add(stored_document)
-        self._uploaded_document_ids.add(stored_document.id)
         self._uploaded_documents[stored_document.id] = transformed_document
         self.upload_service.upload_document(
             document=stored_document,
             session_id=self._active_session_id,
         )
-        return stored_document
+        return self._build_upload_result(
+            transformed_document=transformed_document,
+            target_identifier=stored_document.id,
+            idempotent_replay=False,
+        )
 
     def get_uploaded_document(self, document_id: str) -> TransformedDocument | None:
         """Return an uploaded document using the target-neutral contract."""
@@ -142,6 +167,25 @@ class MockStorionXTargetAdapter(StorionXTargetPort):
             metadata=metadata,
             created_at=transformed_document.created_at,
             modified_at=transformed_document.modified_at,
+        )
+
+    def _build_upload_result(
+        self,
+        *,
+        transformed_document: TransformedDocument,
+        target_identifier: str,
+        idempotent_replay: bool,
+    ) -> UploadResult:
+        """Build a target-neutral result for an upload operation."""
+
+        return UploadResult(
+            item_id=MigrationItemId(
+                value=uuid5(NAMESPACE_URL, transformed_document.source_identifier)
+            ),
+            success=True,
+            target_identifier=target_identifier,
+            error_message=None,
+            idempotent_replay=idempotent_replay,
         )
 
 

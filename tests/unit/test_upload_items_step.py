@@ -44,7 +44,11 @@ class _RecordingTargetPort(StorionXTargetPort):
 
         return self.upload_archived_file(attachment_id, payload)
 
-    def upload_archived_file(self, archived_file_id: str, payload: object) -> object:
+    def upload_archived_file(
+        self,
+        archived_file_id: str,
+        payload: object,
+    ) -> UploadResult:
         """Record document uploads and optionally simulate a failure."""
 
         if not isinstance(payload, TransformedDocument):
@@ -53,10 +57,21 @@ class _RecordingTargetPort(StorionXTargetPort):
 
         self.calls.append((archived_file_id, payload))
         if archived_file_id == self.fail_on_identifier:
-            message = f"upload failed for {archived_file_id}"
-            raise RuntimeError(message)
+            return UploadResult(
+                item_id=MigrationItemId(value=uuid5(NAMESPACE_URL, payload.source_identifier)),
+                success=False,
+                target_identifier=None,
+                error_message=f"upload failed for {archived_file_id}",
+                idempotent_replay=False,
+            )
 
-        return payload.source_identifier
+        return UploadResult(
+            item_id=MigrationItemId(value=uuid5(NAMESPACE_URL, payload.source_identifier)),
+            success=True,
+            target_identifier=payload.source_identifier,
+            error_message=None,
+            idempotent_replay=False,
+        )
 
     def finalize_job(self, job_id: str) -> str:
         """Record job finalization calls."""

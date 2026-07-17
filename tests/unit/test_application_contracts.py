@@ -63,6 +63,7 @@ def test_application_contracts_are_immutable() -> None:
     assert request.job_name == "demo"
     assert result.status == JobStatus.RUNNING
     assert upload.success is True
+    assert upload.idempotent_replay is False
     assert assessment.estimated_duration_minutes == 5
     assert start_command.request is request
     assert pause_command.job_id is not None

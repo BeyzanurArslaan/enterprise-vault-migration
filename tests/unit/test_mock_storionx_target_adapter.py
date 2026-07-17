@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime
 
 from adapters.target import MockStorionXTargetAdapter
+from domain.exceptions import IdempotencyConflictError
 from migration_engine.transformation import TransformedDocument
 from mock_storionx.entities import Document, Metadata, UploadSession
 
@@ -73,12 +75,18 @@ def test_mock_storionx_target_adapter_maps_and_persists_documents() -> None:
         started_at=datetime(2026, 1, 1, 12, 0, tzinfo=UTC),
     )
 
-    stored_document = adapter.upload_archived_file(
+    upload_result = adapter.upload_archived_file(
         transformed_document.source_identifier,
         transformed_document,
     )
 
+    stored_document = adapter.document_storage.get(transformed_document.source_identifier)
+    assert stored_document is not None
     assert stored_document == _build_expected_document()
+    assert upload_result.success is True
+    assert upload_result.target_identifier == transformed_document.source_identifier
+    assert upload_result.error_message is None
+    assert upload_result.idempotent_replay is False
     assert adapter.document_storage.list() == [stored_document]
     assert adapter.upload_service.active_session is not None
     active_session = adapter.upload_service.active_session
@@ -101,21 +109,58 @@ def test_mock_storionx_target_adapter_skips_duplicate_document_uploads() -> None
         started_at=datetime(2026, 1, 1, 12, 0, tzinfo=UTC),
     )
 
-    first_document = adapter.upload_archived_file(
+    first_upload = adapter.upload_archived_file(
         transformed_document.source_identifier,
         transformed_document,
     )
-    second_document = adapter.upload_archived_file(
+    second_upload = adapter.upload_archived_file(
         transformed_document.source_identifier,
         transformed_document,
     )
 
-    assert first_document == second_document
-    assert adapter.document_storage.list() == [first_document]
+    assert first_upload.success is True
+    assert first_upload.idempotent_replay is False
+    assert second_upload.success is True
+    assert second_upload.idempotent_replay is True
+    assert first_upload.target_identifier == second_upload.target_identifier
+    stored_document = adapter.document_storage.get(transformed_document.source_identifier)
+    assert stored_document is not None
+    assert stored_document == _build_expected_document()
+    assert adapter.document_storage.list() == [stored_document]
     assert adapter.upload_service.active_session is not None
     active_session = adapter.upload_service.active_session
     assert active_session is not None
-    assert active_session.uploaded_documents == [first_document]
+    assert active_session.uploaded_documents == [stored_document]
+
+
+def test_mock_storionx_target_adapter_rejects_conflicting_replays() -> None:
+    """The adapter should refuse to overwrite conflicting target content."""
+
+    transformed_document = _build_transformed_document()
+    conflicting_document = replace(transformed_document, checksum="different-checksum")
+    adapter = MockStorionXTargetAdapter(
+        workspace_id="workspace-1",
+        session_id="session-1",
+        started_at=datetime(2026, 1, 1, 12, 0, tzinfo=UTC),
+    )
+
+    adapter.upload_archived_file(
+        transformed_document.source_identifier,
+        transformed_document,
+    )
+
+    try:
+        adapter.upload_archived_file(
+            conflicting_document.source_identifier,
+            conflicting_document,
+        )
+    except IdempotencyConflictError as exc:
+        assert "Idempotency conflict" in str(exc)
+    else:  # pragma: no cover - defensive assertion
+        raise AssertionError("Expected an idempotency conflict")
+    stored_document = adapter.document_storage.get(transformed_document.source_identifier)
+    assert stored_document is not None
+    assert adapter.document_storage.list() == [stored_document]
 
 
 def test_mock_storionx_target_adapter_returns_target_neutral_documents() -> None:

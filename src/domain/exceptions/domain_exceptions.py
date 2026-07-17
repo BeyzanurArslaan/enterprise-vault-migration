@@ -39,6 +39,10 @@ class CheckpointError(DomainException):
     """Raised when checkpoint state cannot support the requested workflow."""
 
 
+class IdempotencyConflictError(DomainException):
+    """Raised when a repeated target submission conflicts with existing content."""
+
+
 class CheckpointNotFoundError(CheckpointError):
     """Raised when a migration checkpoint cannot be located."""
 
@@ -60,6 +64,7 @@ __all__: list[str] = [
     "MigrationStateError",
     "UnsupportedArchiveTypeError",
     "CheckpointError",
+    "IdempotencyConflictError",
     "CheckpointNotFoundError",
     "UnsupportedCheckpointVersionError",
     "NonResumableCheckpointError",

@@ -3,6 +3,9 @@
 This module defines the pipeline step responsible for uploading transformed
 documents to storionX through the target port boundary. The step stays inside
 the orchestration layer and only consumes target-neutral transformation data.
+It treats stable source identifiers as idempotency keys, counts replayed
+uploads separately from newly created target documents, and keeps duplicate
+prevention inside the target boundary.
 """
 
 from __future__ import annotations
@@ -12,6 +15,7 @@ from datetime import datetime
 from uuid import NAMESPACE_URL, uuid5
 
 from application.dto import UploadResult
+from domain.exceptions import IdempotencyConflictError
 from domain.value_objects.identifiers import MigrationItemId
 from ports import StorionXTargetPort
 
@@ -25,7 +29,12 @@ from ..upload import UploadBatchResult
 
 
 class UploadItemsStep(PipelineStep):
-    """Upload transformed documents to the target system."""
+    """Upload transformed documents to the target system.
+
+    The step treats a repeated source identifier with a matching checksum as a
+    successful idempotent replay and records it separately from newly created
+    target documents.
+    """
 
     def __init__(self, *, target_port: StorionXTargetPort) -> None:
         """Create an upload step bound to a target port implementation."""
@@ -111,11 +120,11 @@ class UploadItemsStep(PipelineStep):
             seen_source_identifiers.add(transformed_document.source_identifier)
             if perform_target_upload:
                 try:
-                    self._target_port.upload_archived_file(
+                    upload_response = self._target_port.upload_archived_file(
                         transformed_document.source_identifier,
                         transformed_document,
                     )
-                except Exception as exc:  # pragma: no cover - exercised through tests
+                except IdempotencyConflictError as exc:
                     failed_documents.append(transformed_document)
                     item_results.append(
                         replace(
@@ -127,14 +136,35 @@ class UploadItemsStep(PipelineStep):
                     )
                     continue
 
+                idempotent_replay = False
+                target_identifier = transformed_document.source_identifier
+                if isinstance(upload_response, UploadResult):
+                    if not upload_response.success:
+                        failed_documents.append(transformed_document)
+                        item_results.append(
+                            replace(
+                                item_result,
+                                success=False,
+                                target_identifier=upload_response.target_identifier,
+                                error_message=upload_response.error_message,
+                            )
+                        )
+                        continue
+
+                    idempotent_replay = upload_response.idempotent_replay
+                    target_identifier = (
+                        upload_response.target_identifier or transformed_document.source_identifier
+                    )
+
                 uploaded_documents.append(transformed_document)
-                uploaded_document_ids.append(transformed_document.source_identifier)
+                uploaded_document_ids.append(target_identifier)
                 item_results.append(
                     replace(
                         item_result,
                         success=True,
-                        target_identifier=transformed_document.source_identifier,
+                        target_identifier=target_identifier,
                         error_message=None,
+                        idempotent_replay=idempotent_replay,
                     )
                 )
                 continue
@@ -162,6 +192,7 @@ class UploadItemsStep(PipelineStep):
                     success=True,
                     target_identifier=transformed_document.source_identifier,
                     error_message=None,
+                    idempotent_replay=False,
                 )
             )
 
@@ -261,6 +292,7 @@ class UploadItemsStep(PipelineStep):
         document: TransformedDocument,
         success: bool,
         error_message: str | None,
+        idempotent_replay: bool = False,
     ) -> UploadResult:
         """Build a stable item-level upload result for a transformed document."""
 
@@ -269,6 +301,7 @@ class UploadItemsStep(PipelineStep):
             success=success,
             target_identifier=document.source_identifier,
             error_message=error_message,
+            idempotent_replay=idempotent_replay,
         )
 
     def _build_snapshot(
@@ -321,6 +354,12 @@ class UploadItemsStep(PipelineStep):
             + len(upload_result.skipped_documents)
         )
         uploaded_items = len(upload_result.uploaded_documents)
+        idempotent_replays = sum(
+            1
+            for result in upload_result.item_results
+            if result.success and result.idempotent_replay
+        )
+        unique_uploaded_items = max(uploaded_items - idempotent_replays, 0)
         failed_items = len(upload_result.failed_documents)
         skipped_items = len(upload_result.skipped_documents)
         all_documents = (
@@ -345,7 +384,8 @@ class UploadItemsStep(PipelineStep):
                 failed_items=failed_items,
                 skipped_items=skipped_items,
                 retried_items=0,
-                uploaded_items=uploaded_items,
+                idempotent_replays=idempotent_replays,
+                uploaded_items=unique_uploaded_items,
                 verification_failures=0,
                 total_bytes=processed_bytes,
                 started_at=started_at,
@@ -365,7 +405,8 @@ class UploadItemsStep(PipelineStep):
             failed_items=failed_items,
             skipped_items=skipped_items,
             retried_items=0,
-            uploaded_items=uploaded_items,
+            idempotent_replays=idempotent_replays,
+            uploaded_items=unique_uploaded_items,
             verification_failures=0,
             total_bytes=processed_bytes,
             started_at=started_at,
