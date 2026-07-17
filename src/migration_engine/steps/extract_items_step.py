@@ -12,6 +12,8 @@ from collections.abc import Sequence
 from dataclasses import replace
 from datetime import datetime
 
+from domain.enums.archive_type import ArchiveType
+
 from ..configuration import MigrationConfiguration
 from ..contracts import (
     ExecutionContext,
@@ -105,6 +107,8 @@ class ExtractItemsStep(PipelineStep):
         extracted_mail_items: list[SourceMailItem] = []
         extracted_attachments: list[SourceAttachment] = []
         discovered_archives: list[SourceArchive] = []
+        unsupported_archives: list[SourceArchive] = []
+        warnings: list[str] = []
         current_archive_name: str | None = None
         current_mailbox_address: str | None = None
         current_item_subject: str | None = None
@@ -118,6 +122,11 @@ class ExtractItemsStep(PipelineStep):
 
                 discovered_archives.append(archive)
                 current_archive_name = archive.name
+                if archive.archive_type == ArchiveType.FSA:
+                    unsupported_archives.append(archive)
+                    warnings.append(f"Unsupported archive type: {archive.archive_type}")
+                    continue
+
                 for mailbox in archive.mailboxes:
                     source_item_count += len(mailbox.mail_items)
                     extracted_mailboxes.append(mailbox)
@@ -128,6 +137,18 @@ class ExtractItemsStep(PipelineStep):
                         if self._mail_item_matches_filters(mail_item, configuration)
                     ]
                     for mail_item in filtered_mail_items:
+                        extracted_mail_items.append(mail_item)
+                        extracted_attachments.extend(mail_item.attachments)
+                        current_item_subject = mail_item.subject
+                        extracted_item_count += 1
+
+                for journal_archive in archive.journal_archives:
+                    source_item_count += len(journal_archive.mail_items)
+                    current_mailbox_address = None
+                    for mail_item in journal_archive.mail_items:
+                        if not self._mail_item_matches_filters(mail_item, configuration):
+                            continue
+
                         extracted_mail_items.append(mail_item)
                         extracted_attachments.extend(mail_item.attachments)
                         current_item_subject = mail_item.subject
@@ -145,6 +166,8 @@ class ExtractItemsStep(PipelineStep):
             total_mailboxes=len(extracted_mailboxes),
             total_items=len(extracted_mail_items),
             total_attachments=len(extracted_attachments),
+            unsupported_archives=tuple(unsupported_archives),
+            warnings=tuple(warnings),
         )
         updated_state = self._resolve_state(context.state_machine)
         updated_metrics = self._resolve_metrics(
@@ -161,6 +184,7 @@ class ExtractItemsStep(PipelineStep):
             filtered_items=filtered_items,
             started_at=context.execution_context.started_at,
             finished_at=discovered_at,
+            warnings=tuple(warnings),
         )
         updated_snapshot = self._build_snapshot(
             extraction_result=extraction_result,
@@ -183,6 +207,7 @@ class ExtractItemsStep(PipelineStep):
             configuration=configuration,
             started_at=context.execution_context.started_at,
             finished_at=discovered_at,
+            warnings=tuple(warnings),
         )
         progress_tracker = self._resolve_tracker(
             tracker=context.progress_tracker,
@@ -329,9 +354,11 @@ class ExtractItemsStep(PipelineStep):
         filtered_items: int,
         started_at: datetime,
         finished_at: datetime,
+        warnings: tuple[str, ...],
     ) -> MigrationMetrics:
         """Resolve the metrics object for the current extraction state."""
 
+        _ = warnings
         duration_seconds = max((finished_at - started_at).total_seconds(), 0.0)
         processed_items = extraction_result.total_items
         processed_bytes = sum(
@@ -395,6 +422,7 @@ class ExtractItemsStep(PipelineStep):
         configuration: MigrationConfiguration,
         started_at: datetime,
         finished_at: datetime,
+        warnings: tuple[str, ...],
     ) -> ExecutionReport:
         """Resolve the execution report for the current extraction state."""
 
@@ -412,6 +440,7 @@ class ExtractItemsStep(PipelineStep):
                 folder_paths=configuration.folder_paths,
                 start_date=configuration.start_date,
                 end_date=configuration.end_date,
+                warnings=warnings,
             )
 
         return ExecutionReport(
@@ -425,6 +454,7 @@ class ExtractItemsStep(PipelineStep):
             folder_paths=configuration.folder_paths,
             start_date=configuration.start_date,
             end_date=configuration.end_date,
+            warnings=warnings,
         )
 
     def _resolve_tracker(

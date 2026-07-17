@@ -8,8 +8,11 @@ the target implementation.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
+
+from domain.enums.archive_type import ArchiveType
+from domain.enums.item_type import ItemType
 
 
 @dataclass(slots=True, frozen=True, kw_only=True)
@@ -18,7 +21,6 @@ class TransformedDocument:
 
     source_identifier: str
     archive_name: str
-    mailbox_address: str
     subject: str
     filename: str
     content_type: str
@@ -37,6 +39,17 @@ class TransformedDocument:
     attachment_sizes: tuple[int, ...]
     created_at: datetime
     modified_at: datetime
+    archive_type: ArchiveType = field(default=ArchiveType.MAILBOX, compare=False)
+    item_type: ItemType = field(default=ItemType.EMAIL, compare=False)
+    mailbox_address: str | None = field(default=None, compare=False)
+    folder_path: str | None = field(default=None, compare=False)
+    source_path: str | None = field(default=None, compare=False)
+    is_orphaned: bool = field(default=False, compare=False)
+    original_owner_identifier: str | None = field(default=None, compare=False)
+    owner_resolution_status: str = field(default="resolved", compare=False)
+    legal_hold: bool = field(default=False, compare=False)
+    legal_hold_policy_id: str | None = field(default=None, compare=False)
+    journal_metadata: tuple[tuple[str, str], ...] = field(default=(), compare=False)
 
 
 __all__: list[str] = ["TransformedDocument"]

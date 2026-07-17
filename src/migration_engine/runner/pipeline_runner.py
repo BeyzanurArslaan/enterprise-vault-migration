@@ -286,6 +286,11 @@ class PipelineRunner:
                         metrics=failure_metrics,
                         completed=False,
                         configuration=execution_context.configuration,
+                        warnings=(
+                            current_step_context.execution_report.warnings
+                            if current_step_context.execution_report is not None
+                            else ()
+                        ),
                     )
                     self._rollback_steps(
                         completed_steps=completed_steps,
@@ -332,6 +337,11 @@ class PipelineRunner:
             metrics=final_metrics,
             completed=True,
             configuration=execution_context.configuration,
+            warnings=(
+                current_step_context.execution_report.warnings
+                if current_step_context.execution_report is not None
+                else ()
+            ),
         )
         final_context = self._advance_context(
             current_context,
@@ -609,6 +619,7 @@ class PipelineRunner:
         metrics: MigrationMetrics,
         completed: bool,
         configuration: MigrationConfiguration,
+        warnings: tuple[str, ...] = (),
     ) -> ExecutionReport:
         """Build an execution report for the current orchestration state."""
 
@@ -620,6 +631,7 @@ class PipelineRunner:
             duration_seconds=duration,
             completed=completed,
             metrics=metrics,
+            warnings=warnings,
             archive_names=configuration.archive_names,
             folder_paths=configuration.folder_paths,
             start_date=configuration.start_date,
@@ -645,7 +657,7 @@ class PipelineRunner:
             metrics=metrics,
             completed_at=completed_at,
             duration=duration,
-            warnings=(),
+            warnings=report.warnings,
             errors=errors,
         )
         return self.execution_result

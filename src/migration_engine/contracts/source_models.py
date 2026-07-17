@@ -12,6 +12,9 @@ from collections.abc import Sequence
 from datetime import datetime
 from typing import Protocol
 
+from domain.enums.archive_type import ArchiveType
+from domain.enums.item_type import ItemType
+
 
 class SourceRetentionPolicy(Protocol):
     """Structural contract for a source retention policy."""
@@ -77,6 +80,98 @@ class SourceContentPart(Protocol):
         """Return the content part SHA-256 checksum."""
 
 
+class SourceShortcut(Protocol):
+    """Structural contract for a source shortcut reference."""
+
+    @property
+    def target_path(self) -> str:
+        """Return the shortcut target path."""
+
+    @property
+    def description(self) -> str:
+        """Return the shortcut description."""
+
+    @property
+    def shortcut_id(self) -> str:
+        """Return the shortcut identifier."""
+
+    @property
+    def original_source_item_id(self) -> str:
+        """Return the original source item identifier."""
+
+    @property
+    def archive_id(self) -> str:
+        """Return the archive identifier."""
+
+    @property
+    def original_path(self) -> str:
+        """Return the original source path or folder."""
+
+    @property
+    def created_at(self) -> datetime | None:
+        """Return the shortcut creation timestamp."""
+
+    @property
+    def archived_content_reference(self) -> str | None:
+        """Return the archived-content reference."""
+
+    @property
+    def status(self) -> str:
+        """Return the shortcut status."""
+
+
+class SourceArchivedFile(Protocol):
+    """Structural contract for a source archived file."""
+
+    @property
+    def path(self) -> str:
+        """Return the archived file path."""
+
+    @property
+    def size_bytes(self) -> int:
+        """Return the archived file size in bytes."""
+
+    @property
+    def checksum(self) -> str | None:
+        """Return the archived file checksum."""
+
+    @property
+    def file_name(self) -> str | None:
+        """Return the archived file name."""
+
+    @property
+    def extension(self) -> str | None:
+        """Return the archived file extension."""
+
+    @property
+    def archived_at(self) -> datetime | None:
+        """Return the archived timestamp."""
+
+    @property
+    def modified_at(self) -> datetime | None:
+        """Return the modified timestamp."""
+
+    @property
+    def legal_hold(self) -> bool:
+        """Return whether the archived file is under legal hold."""
+
+    @property
+    def legal_hold_policy_id(self) -> str | None:
+        """Return the legal hold policy identifier."""
+
+    @property
+    def source_path(self) -> str | None:
+        """Return the original file-system path when one exists."""
+
+    @property
+    def shortcut(self) -> SourceShortcut | None:
+        """Return the shortcut associated with the archived file."""
+
+    @property
+    def item_type(self) -> ItemType:
+        """Return the archived file item type."""
+
+
 class SourceMailItem(Protocol):
     """Structural contract for a source mail item."""
 
@@ -117,6 +212,10 @@ class SourceMailItem(Protocol):
         """Return the message size in bytes."""
 
     @property
+    def item_type(self) -> ItemType:
+        """Return the source item type."""
+
+    @property
     def retention_policy(self) -> SourceRetentionPolicy:
         """Return the retention policy."""
 
@@ -144,6 +243,22 @@ class SourceMailItem(Protocol):
     def folder_path(self) -> str:
         """Return the source folder path for the mail item."""
 
+    @property
+    def legal_hold(self) -> bool:
+        """Return whether the item is under legal hold."""
+
+    @property
+    def legal_hold_policy_id(self) -> str | None:
+        """Return the legal hold policy identifier."""
+
+    @property
+    def journal_metadata(self) -> Sequence[tuple[str, str]]:
+        """Return journal metadata associated with the source item."""
+
+    @property
+    def source_path(self) -> str | None:
+        """Return the original source path when one exists."""
+
 
 class SourceMailbox(Protocol):
     """Structural contract for a source mailbox."""
@@ -165,8 +280,52 @@ class SourceArchive(Protocol):
         """Return the archive name."""
 
     @property
+    def archive_type(self) -> ArchiveType:
+        """Return the archive type."""
+
+    @property
+    def is_orphaned(self) -> bool:
+        """Return whether the archive has no active owner mapping."""
+
+    @property
+    def original_owner_identifier(self) -> str | None:
+        """Return the original owner identifier when available."""
+
+    @property
+    def owner_resolution_status(self) -> str:
+        """Return the owner resolution status."""
+
+    @property
     def mailboxes(self) -> Sequence[SourceMailbox]:
         """Return the contained mailboxes."""
+
+    @property
+    def journal_archives(self) -> Sequence[SourceJournalArchive]:
+        """Return the contained journal archives."""
+
+    @property
+    def archived_files(self) -> Sequence[SourceArchivedFile]:
+        """Return the contained archived files."""
+
+    @property
+    def shortcuts(self) -> Sequence[SourceShortcut]:
+        """Return the contained shortcut references."""
+
+    @property
+    def source_path(self) -> str | None:
+        """Return the original archive path when one exists."""
+
+
+class SourceJournalArchive(Protocol):
+    """Structural contract for a source journal archive."""
+
+    @property
+    def name(self) -> str:
+        """Return the journal archive name."""
+
+    @property
+    def mail_items(self) -> Sequence[SourceMailItem]:
+        """Return the contained journal mail items."""
 
 
 class SourceVaultStore(Protocol):
@@ -190,11 +349,14 @@ class SourceDatasetGenerator(Protocol):
 
 __all__: list[str] = [
     "SourceArchive",
+    "SourceArchivedFile",
     "SourceAttachment",
     "SourceContentPart",
     "SourceDatasetGenerator",
+    "SourceJournalArchive",
     "SourceMailbox",
     "SourceMailItem",
     "SourceRetentionPolicy",
+    "SourceShortcut",
     "SourceVaultStore",
 ]

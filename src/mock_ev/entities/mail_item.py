@@ -10,6 +10,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import TYPE_CHECKING
 
+from domain.enums.item_type import ItemType
+
 if TYPE_CHECKING:
     from .attachment import Attachment
     from .content_part import ContentPart
@@ -30,12 +32,17 @@ class MailItem:
     conversation_id: str
     message_size: int
     retention_policy: RetentionPolicy
+    item_type: ItemType = ItemType.EMAIL
     recipients: list[str] = field(default_factory=list)
     cc_recipients: list[str] = field(default_factory=list)
     bcc_recipients: list[str] = field(default_factory=list)
     attachments: list[Attachment] = field(default_factory=list)
     content_parts: list[ContentPart] = field(default_factory=list)
     folder_path: str = "/Inbox"
+    legal_hold: bool = False
+    legal_hold_policy_id: str | None = None
+    journal_metadata: tuple[tuple[str, str], ...] = ()
+    source_path: str | None = None
 
 
 __all__: list[str] = ["MailItem"]

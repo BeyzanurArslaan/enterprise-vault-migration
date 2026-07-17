@@ -47,7 +47,15 @@ class MockEnterpriseVaultSourceAdapter(EnterpriseVaultSourcePort):
         if archive is None:
             return ()
 
-        return tuple(mail_item for mailbox in archive.mailboxes for mail_item in mailbox.mail_items)
+        mailbox_mail_items = tuple(
+            mail_item for mailbox in archive.mailboxes for mail_item in mailbox.mail_items
+        )
+        journal_mail_items = tuple(
+            mail_item
+            for journal_archive in archive.journal_archives
+            for mail_item in journal_archive.mail_items
+        )
+        return mailbox_mail_items + journal_mail_items
 
     def stream_archived_files(self, archive_id: str) -> tuple[ArchivedFile, ...]:
         """Return deterministic archived-file views for the requested archive."""
@@ -55,6 +63,9 @@ class MockEnterpriseVaultSourceAdapter(EnterpriseVaultSourcePort):
         archive = self.load_archive(archive_id)
         if archive is None:
             return ()
+
+        if archive.archived_files:
+            return tuple(archive.archived_files)
 
         archived_files: list[ArchivedFile] = []
         for mailbox in archive.mailboxes:

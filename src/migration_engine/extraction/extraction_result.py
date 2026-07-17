@@ -22,6 +22,8 @@ class ExtractionResult:
     total_mailboxes: int
     total_items: int
     total_attachments: int
+    unsupported_archives: tuple[SourceArchive, ...] = ()
+    warnings: tuple[str, ...] = ()
 
 
 __all__: list[str] = ["ExtractionResult"]

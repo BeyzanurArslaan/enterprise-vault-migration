@@ -521,6 +521,11 @@ class FinalizeMigrationStep(PipelineStep):
                 if context.transformation_result is not None
                 else 0
             )
+            merged_warnings = report.warnings + tuple(
+                warning
+                for warning in self._build_warnings(context)
+                if warning not in report.warnings
+            )
             return replace(
                 report,
                 successful_steps=0 if failed_execution else 1,
@@ -536,7 +541,7 @@ class FinalizeMigrationStep(PipelineStep):
                 discovered_archives=discovered_archives,
                 extracted_items=extracted_items,
                 transformed_items=transformed_items,
-                warnings=self._build_warnings(context),
+                warnings=merged_warnings,
                 metrics=metrics,
                 reconciliation=reconciliation,
                 archive_names=configuration.archive_names,

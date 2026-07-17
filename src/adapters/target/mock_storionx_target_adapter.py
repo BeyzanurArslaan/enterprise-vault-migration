@@ -17,6 +17,8 @@ from datetime import UTC, datetime
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from application.dto import UploadResult
+from domain.enums.archive_type import ArchiveType
+from domain.enums.item_type import ItemType
 from domain.exceptions import IdempotencyConflictError
 from domain.value_objects.identifiers import MigrationItemId
 from migration_engine.transformation import TransformedDocument
@@ -156,7 +158,7 @@ class MockStorionXTargetAdapter(StorionXTargetPort):
             department=transformed_document.department,
             retention_policy=transformed_document.retention_policy,
             tags=list(transformed_document.tags),
-            custom_properties=dict(transformed_document.custom_properties),
+            custom_properties=self._build_custom_properties(transformed_document),
         )
         return Document(
             id=transformed_document.source_identifier,
@@ -168,6 +170,44 @@ class MockStorionXTargetAdapter(StorionXTargetPort):
             created_at=transformed_document.created_at,
             modified_at=transformed_document.modified_at,
         )
+
+    def _build_custom_properties(
+        self,
+        transformed_document: TransformedDocument,
+    ) -> dict[str, str]:
+        """Build metadata properties while preserving migration-specific context."""
+
+        custom_properties = dict(transformed_document.custom_properties)
+        if transformed_document.archive_type != ArchiveType.MAILBOX:
+            custom_properties["archive_type"] = transformed_document.archive_type.value
+        if transformed_document.item_type != ItemType.EMAIL:
+            custom_properties["item_type"] = transformed_document.item_type.value
+        if transformed_document.mailbox_address is None:
+            custom_properties["mailbox_address"] = ""
+        if transformed_document.folder_path is not None:
+            custom_properties["folder_path"] = transformed_document.folder_path
+        if transformed_document.source_path is not None:
+            custom_properties["source_path"] = transformed_document.source_path
+        if transformed_document.is_orphaned:
+            custom_properties["is_orphaned"] = "true"
+        if transformed_document.original_owner_identifier is not None:
+            custom_properties["original_owner_identifier"] = (
+                transformed_document.original_owner_identifier
+            )
+        if transformed_document.owner_resolution_status != "resolved":
+            custom_properties["owner_resolution_status"] = (
+                transformed_document.owner_resolution_status
+            )
+        if transformed_document.legal_hold:
+            custom_properties["legal_hold"] = "true"
+        if transformed_document.legal_hold_policy_id is not None:
+            custom_properties["legal_hold_policy_id"] = transformed_document.legal_hold_policy_id
+        if transformed_document.journal_metadata:
+            custom_properties["journal_metadata"] = ";".join(
+                f"{key}={value}" for key, value in transformed_document.journal_metadata
+            )
+
+        return custom_properties
 
     def _build_upload_result(
         self,

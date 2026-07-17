@@ -12,6 +12,7 @@ from collections.abc import Sequence
 from dataclasses import replace
 from datetime import datetime
 
+from domain.enums.archive_type import ArchiveType
 from domain.exceptions import ValidationError
 
 from ..configuration import MigrationConfiguration
@@ -115,19 +116,20 @@ class TransformItemsStep(PipelineStep):
                 failed_items += 1
                 warnings.append(str(exc))
                 current_archive_name = archive.name
-                current_mailbox_address = mailbox.address
+                current_mailbox_address = mailbox.address if mailbox is not None else None
                 current_item_name = mail_item.subject
                 continue
 
             transformed_document = self._transform_mail_item(
+                archive=archive,
                 archive_name=archive.name,
-                mailbox_address=mailbox.address,
+                mailbox_address=mailbox.address if mailbox is not None else None,
                 mail_item=mail_item,
                 rehydrated_content=rehydrated_content,
             )
             transformed_documents.append(transformed_document)
             current_archive_name = archive.name
-            current_mailbox_address = mailbox.address
+            current_mailbox_address = mailbox.address if mailbox is not None else None
             current_item_name = transformed_document.filename
 
         started_at = context.execution_context.started_at
@@ -281,6 +283,10 @@ class TransformItemsStep(PipelineStep):
                     for mail_item in mailbox.mail_items:
                         extracted_mail_items.append(mail_item)
                         extracted_attachments.extend(mail_item.attachments)
+                for journal_archive in archive.journal_archives:
+                    for mail_item in journal_archive.mail_items:
+                        extracted_mail_items.append(mail_item)
+                        extracted_attachments.extend(mail_item.attachments)
 
         return ExtractionResult(
             discovered_archives=tuple(discovered_archives),
@@ -326,7 +332,7 @@ class TransformItemsStep(PipelineStep):
         self,
         vault_stores: Sequence[SourceVaultStore],
         mail_item: SourceMailItem,
-    ) -> tuple[SourceArchive, SourceMailbox]:
+    ) -> tuple[SourceArchive, SourceMailbox | None]:
         """Resolve the archive and mailbox that contain a mail item."""
 
         for vault_store in vault_stores:
@@ -338,6 +344,13 @@ class TransformItemsStep(PipelineStep):
                             or candidate.internet_message_id == mail_item.internet_message_id
                         ):
                             return archive, mailbox
+                for journal_archive in archive.journal_archives:
+                    for candidate in journal_archive.mail_items:
+                        if (
+                            candidate is mail_item
+                            or candidate.internet_message_id == mail_item.internet_message_id
+                        ):
+                            return archive, None
 
         message = "Transformation requires mail item context that matches the extracted source item"
         raise ValueError(message)
@@ -345,8 +358,9 @@ class TransformItemsStep(PipelineStep):
     def _transform_mail_item(
         self,
         *,
+        archive: SourceArchive,
         archive_name: str,
-        mailbox_address: str,
+        mailbox_address: str | None,
         mail_item: SourceMailItem,
         rehydrated_content: RehydratedContent,
     ) -> TransformedDocument:
@@ -363,6 +377,11 @@ class TransformItemsStep(PipelineStep):
             ("message_size", str(mail_item.message_size)),
             ("attachment_count", str(len(mail_item.attachments))),
         )
+        resolved_department = self._derive_department(
+            mailbox_address=mailbox_address,
+            archive_type=archive.archive_type,
+        )
+        mailbox_tag = mailbox_address or archive.archive_type.value
         return TransformedDocument(
             source_identifier=mail_item.internet_message_id,
             archive_name=archive_name,
@@ -377,14 +396,24 @@ class TransformItemsStep(PipelineStep):
             cc_recipients=tuple(mail_item.cc_recipients),
             bcc_recipients=tuple(mail_item.bcc_recipients),
             retention_policy=mail_item.retention_policy.name,
-            department=self._derive_department(mailbox_address),
-            tags=(archive_name, mailbox_address, mail_item.conversation_id),
+            department=resolved_department,
+            tags=(archive_name, mailbox_tag, mail_item.conversation_id),
             custom_properties=metadata_properties,
             attachment_filenames=attachment_filenames,
             attachment_checksums=attachment_checksums,
             attachment_sizes=attachment_sizes,
             created_at=mail_item.sent_at,
             modified_at=mail_item.modified_at,
+            archive_type=archive.archive_type,
+            item_type=mail_item.item_type,
+            folder_path=mail_item.folder_path,
+            source_path=mail_item.source_path or archive.source_path,
+            is_orphaned=archive.is_orphaned,
+            original_owner_identifier=archive.original_owner_identifier,
+            owner_resolution_status=archive.owner_resolution_status,
+            legal_hold=mail_item.legal_hold,
+            legal_hold_policy_id=mail_item.legal_hold_policy_id,
+            journal_metadata=tuple(mail_item.journal_metadata),
         )
 
     def _rehydrate_mail_item(
@@ -403,8 +432,20 @@ class TransformItemsStep(PipelineStep):
             completed_at=completed_at,
         )
 
-    def _derive_department(self, mailbox_address: str) -> str:
+    def _derive_department(
+        self,
+        *,
+        mailbox_address: str | None,
+        archive_type: ArchiveType,
+    ) -> str:
         """Derive a deterministic department label from the mailbox address."""
+
+        if mailbox_address is None:
+            if archive_type == ArchiveType.JOURNAL:
+                return "Journal"
+            if archive_type == ArchiveType.FSA:
+                return "FileSystem"
+            return "Unknown"
 
         if "@" not in mailbox_address:
             return "Unknown"
@@ -527,6 +568,9 @@ class TransformItemsStep(PipelineStep):
 
         duration_seconds = max((completed_at - started_at).total_seconds(), 0.0)
         if report is not None:
+            merged_warnings = report.warnings + tuple(
+                warning for warning in warnings if warning not in report.warnings
+            )
             return replace(
                 report,
                 successful_steps=1 if completed else 0,
@@ -534,7 +578,7 @@ class TransformItemsStep(PipelineStep):
                 skipped_steps=0,
                 duration_seconds=duration_seconds,
                 completed=completed,
-                warnings=warnings,
+                warnings=merged_warnings,
                 metrics=metrics,
                 archive_names=configuration.archive_names,
                 folder_paths=configuration.folder_paths,

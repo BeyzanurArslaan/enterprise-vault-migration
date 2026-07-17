@@ -13,12 +13,15 @@ from .pipeline_step import PipelineStep
 from .progress_snapshot import ProgressSnapshot
 from .source_models import (
     SourceArchive,
+    SourceArchivedFile,
     SourceAttachment,
     SourceContentPart,
     SourceDatasetGenerator,
+    SourceJournalArchive,
     SourceMailbox,
     SourceMailItem,
     SourceRetentionPolicy,
+    SourceShortcut,
     SourceVaultStore,
 )
 
@@ -28,11 +31,14 @@ __all__: list[str] = [
     "PipelineStep",
     "ProgressSnapshot",
     "SourceArchive",
+    "SourceArchivedFile",
     "SourceAttachment",
     "SourceContentPart",
     "SourceDatasetGenerator",
+    "SourceJournalArchive",
     "SourceMailbox",
     "SourceMailItem",
     "SourceRetentionPolicy",
+    "SourceShortcut",
     "SourceVaultStore",
 ]

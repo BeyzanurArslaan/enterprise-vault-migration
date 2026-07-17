@@ -466,6 +466,7 @@ class UploadItemsStep(PipelineStep):
                 skipped_steps=skipped_steps,
                 duration_seconds=duration_seconds,
                 completed=completed,
+                warnings=report.warnings,
                 metrics=metrics,
                 archive_names=configuration.archive_names,
                 folder_paths=configuration.folder_paths,
