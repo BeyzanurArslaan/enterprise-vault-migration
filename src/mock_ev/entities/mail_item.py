@@ -33,6 +33,7 @@ class MailItem:
     cc_recipients: list[str] = field(default_factory=list)
     bcc_recipients: list[str] = field(default_factory=list)
     attachments: list[Attachment] = field(default_factory=list)
+    folder_path: str = "/Inbox"
 
 
 __all__: list[str] = ["MailItem"]

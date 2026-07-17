@@ -104,6 +104,8 @@ def test_checkpoint_snapshot_is_immutable_and_versioned() -> None:
         "successful_items",
         "failed_items",
         "skipped_items",
+        "filtered_archives",
+        "filtered_items",
         "uploaded_items",
         "verification_failures",
         "current_state",
@@ -111,6 +113,10 @@ def test_checkpoint_snapshot_is_immutable_and_versioned() -> None:
         "updated_at",
         "dry_run",
         "dry_run_items",
+        "archive_names",
+        "folder_paths",
+        "start_date",
+        "end_date",
         "version",
     }
 
@@ -141,6 +147,12 @@ def test_checkpoint_snapshot_uses_serializable_safe_field_types() -> None:
     assert isinstance(checkpoint.updated_at, datetime)
     assert isinstance(checkpoint.dry_run, bool)
     assert isinstance(checkpoint.dry_run_items, int)
+    assert isinstance(checkpoint.filtered_archives, int)
+    assert isinstance(checkpoint.filtered_items, int)
+    assert checkpoint.archive_names is None
+    assert checkpoint.folder_paths is None
+    assert checkpoint.start_date is None
+    assert checkpoint.end_date is None
     assert checkpoint.dry_run is False
     assert checkpoint.dry_run_items == 0
 

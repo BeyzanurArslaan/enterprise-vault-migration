@@ -14,6 +14,7 @@ from datetime import datetime
 
 from ports import StorionXTargetPort
 
+from ..configuration import MigrationConfiguration
 from ..contracts import ExecutionContext, ExecutionReport, PipelineStep, ProgressSnapshot
 from ..metrics import MigrationMetrics
 from ..progress_tracker import ProgressTracker
@@ -151,6 +152,7 @@ class VerifyItemsStep(PipelineStep):
             ),
             metrics=updated_metrics,
             verification_result=verification_result,
+            configuration=context.execution_context.configuration,
             started_at=started_at,
             completed_at=completed_at,
             completed=completed,
@@ -360,6 +362,7 @@ class VerifyItemsStep(PipelineStep):
         report: ExecutionReport | None,
         metrics: MigrationMetrics,
         verification_result: VerificationResult,
+        configuration: MigrationConfiguration,
         started_at: datetime,
         completed_at: datetime,
         completed: bool,
@@ -377,6 +380,10 @@ class VerifyItemsStep(PipelineStep):
                 duration_seconds=duration_seconds,
                 completed=completed,
                 metrics=metrics,
+                archive_names=configuration.archive_names,
+                folder_paths=configuration.folder_paths,
+                start_date=configuration.start_date,
+                end_date=configuration.end_date,
             )
 
         return ExecutionReport(
@@ -386,6 +393,10 @@ class VerifyItemsStep(PipelineStep):
             duration_seconds=duration_seconds,
             completed=completed,
             metrics=metrics,
+            archive_names=configuration.archive_names,
+            folder_paths=configuration.folder_paths,
+            start_date=configuration.start_date,
+            end_date=configuration.end_date,
         )
 
     def _resolve_tracker(

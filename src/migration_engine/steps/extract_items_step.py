@@ -12,6 +12,7 @@ from collections.abc import Sequence
 from dataclasses import replace
 from datetime import datetime
 
+from ..configuration import MigrationConfiguration
 from ..contracts import (
     ExecutionContext,
     ExecutionReport,
@@ -78,35 +79,64 @@ class ExtractItemsStep(PipelineStep):
             message = "Extraction requires archive discovery results"
             raise ValueError(message)
 
+        configuration = context.execution_context.configuration
         source_vault_stores = self._resolve_vault_stores(context.vault_stores)
         selected_vault_stores = self._select_vault_stores(
             source_vault_stores,
             context.discovery_result.vault_store_names,
         )
-        discovered_archives = self._select_archives(
-            selected_vault_stores,
-            context.discovery_result.archive_names,
-        )
+        archive_names = context.discovery_result.archive_names
+        filtered_archives = 0
+        if configuration.archive_names is not None:
+            allowed_archive_names = set(configuration.archive_names)
+            filtered_archives = len(
+                [
+                    archive_name
+                    for archive_name in archive_names
+                    if archive_name not in allowed_archive_names
+                ]
+            )
+            archive_names = tuple(
+                archive_name
+                for archive_name in archive_names
+                if archive_name in allowed_archive_names
+            )
         extracted_mailboxes: list[SourceMailbox] = []
         extracted_mail_items: list[SourceMailItem] = []
         extracted_attachments: list[SourceAttachment] = []
+        discovered_archives: list[SourceArchive] = []
         current_archive_name: str | None = None
         current_mailbox_address: str | None = None
         current_item_subject: str | None = None
+        source_item_count = 0
+        extracted_item_count = 0
 
-        for archive in discovered_archives:
-            current_archive_name = archive.name
-            for mailbox in archive.mailboxes:
-                extracted_mailboxes.append(mailbox)
-                current_mailbox_address = mailbox.address
-                for mail_item in mailbox.mail_items:
-                    extracted_mail_items.append(mail_item)
-                    current_item_subject = mail_item.subject
-                    extracted_attachments.extend(mail_item.attachments)
+        for vault_store in selected_vault_stores:
+            for archive in vault_store.archives:
+                if archive.name not in archive_names:
+                    continue
+
+                discovered_archives.append(archive)
+                current_archive_name = archive.name
+                for mailbox in archive.mailboxes:
+                    source_item_count += len(mailbox.mail_items)
+                    extracted_mailboxes.append(mailbox)
+                    current_mailbox_address = mailbox.address
+                    filtered_mail_items = [
+                        mail_item
+                        for mail_item in mailbox.mail_items
+                        if self._mail_item_matches_filters(mail_item, configuration)
+                    ]
+                    for mail_item in filtered_mail_items:
+                        extracted_mail_items.append(mail_item)
+                        extracted_attachments.extend(mail_item.attachments)
+                        current_item_subject = mail_item.subject
+                        extracted_item_count += 1
 
         discovered_at = (
             context.execution_context.current_timestamp or context.execution_context.started_at
         )
+        filtered_items = source_item_count - extracted_item_count
         extraction_result = ExtractionResult(
             discovered_archives=tuple(discovered_archives),
             extracted_mailboxes=tuple(extracted_mailboxes),
@@ -127,6 +157,8 @@ class ExtractItemsStep(PipelineStep):
                 )
             ),
             extraction_result=extraction_result,
+            filtered_archives=filtered_archives,
+            filtered_items=filtered_items,
             started_at=context.execution_context.started_at,
             finished_at=discovered_at,
         )
@@ -148,6 +180,7 @@ class ExtractItemsStep(PipelineStep):
                 )
             ),
             metrics=updated_metrics,
+            configuration=configuration,
             started_at=context.execution_context.started_at,
             finished_at=discovered_at,
         )
@@ -292,6 +325,8 @@ class ExtractItemsStep(PipelineStep):
         *,
         metrics: MigrationMetrics | None,
         extraction_result: ExtractionResult,
+        filtered_archives: int,
+        filtered_items: int,
         started_at: datetime,
         finished_at: datetime,
     ) -> MigrationMetrics:
@@ -320,6 +355,8 @@ class ExtractItemsStep(PipelineStep):
                 successful_items=processed_items,
                 failed_items=0,
                 skipped_items=0,
+                filtered_archives=max(metrics.filtered_archives, filtered_archives),
+                filtered_items=filtered_items,
                 retried_items=0,
                 uploaded_items=0,
                 verification_failures=0,
@@ -340,6 +377,8 @@ class ExtractItemsStep(PipelineStep):
             successful_items=processed_items,
             failed_items=0,
             skipped_items=0,
+            filtered_archives=filtered_archives,
+            filtered_items=filtered_items,
             retried_items=0,
             uploaded_items=0,
             verification_failures=0,
@@ -353,6 +392,7 @@ class ExtractItemsStep(PipelineStep):
         *,
         report: ExecutionReport | None,
         metrics: MigrationMetrics,
+        configuration: MigrationConfiguration,
         started_at: datetime,
         finished_at: datetime,
     ) -> ExecutionReport:
@@ -368,6 +408,10 @@ class ExtractItemsStep(PipelineStep):
                 duration_seconds=duration_seconds,
                 completed=True,
                 metrics=metrics,
+                archive_names=configuration.archive_names,
+                folder_paths=configuration.folder_paths,
+                start_date=configuration.start_date,
+                end_date=configuration.end_date,
             )
 
         return ExecutionReport(
@@ -377,6 +421,10 @@ class ExtractItemsStep(PipelineStep):
             duration_seconds=duration_seconds,
             completed=True,
             metrics=metrics,
+            archive_names=configuration.archive_names,
+            folder_paths=configuration.folder_paths,
+            start_date=configuration.start_date,
+            end_date=configuration.end_date,
         )
 
     def _resolve_tracker(
@@ -413,6 +461,62 @@ class ExtractItemsStep(PipelineStep):
             return state_machine.current_state
 
         return MigrationState.EXTRACTING
+
+    def _mail_item_matches_filters(
+        self,
+        mail_item: SourceMailItem,
+        configuration: MigrationConfiguration,
+    ) -> bool:
+        """Return whether a source mail item matches the configured filters."""
+
+        if configuration.folder_paths is not None:
+            normalized_folder_paths = {
+                self._normalize_folder_path(folder_path)
+                for folder_path in configuration.folder_paths
+            }
+            if self._normalize_folder_path(mail_item.folder_path) not in normalized_folder_paths:
+                if not any(
+                    self._folder_path_matches(
+                        selected_folder_path=folder_path,
+                        item_folder_path=mail_item.folder_path,
+                    )
+                    for folder_path in normalized_folder_paths
+                ):
+                    return False
+
+        if configuration.start_date is not None and mail_item.sent_at < configuration.start_date:
+            return False
+
+        if configuration.end_date is not None and mail_item.sent_at > configuration.end_date:
+            return False
+
+        return True
+
+    def _normalize_folder_path(self, folder_path: str) -> str:
+        """Normalize a folder path for deterministic comparison."""
+
+        normalized_path = folder_path.replace("\\", "/").strip()
+        if not normalized_path:
+            return "/"
+        if not normalized_path.startswith("/"):
+            normalized_path = f"/{normalized_path}"
+        if len(normalized_path) > 1:
+            normalized_path = normalized_path.rstrip("/")
+        return normalized_path
+
+    def _folder_path_matches(
+        self,
+        *,
+        selected_folder_path: str,
+        item_folder_path: str,
+    ) -> bool:
+        """Return whether a source folder path matches a selected folder path."""
+
+        normalized_selected = self._normalize_folder_path(selected_folder_path)
+        normalized_item = self._normalize_folder_path(item_folder_path)
+        return normalized_item == normalized_selected or normalized_item.startswith(
+            f"{normalized_selected}/",
+        )
 
 
 __all__: list[str] = ["ExtractItemsStep"]

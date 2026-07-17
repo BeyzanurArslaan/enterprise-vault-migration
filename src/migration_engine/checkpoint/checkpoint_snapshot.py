@@ -5,7 +5,8 @@ without storing raw email content, attachments, credentials, services, or
 adapter references. The snapshot intentionally contains only the minimal
 serializable state required to resume orchestration in a later sprint. The
 ``dry_run`` flag and ``dry_run_items`` counter preserve analysis-only runs
-without storing any target-side state.
+without storing any target-side state, and the optional filter fields preserve
+the selected archive, folder, and date scope for safe resume operations.
 """
 
 from __future__ import annotations
@@ -26,6 +27,8 @@ class CheckpointSnapshot:
     successful_items: int
     failed_items: int
     skipped_items: int
+    filtered_archives: int = 0
+    filtered_items: int = 0
     uploaded_items: int
     verification_failures: int
     current_state: str
@@ -33,6 +36,10 @@ class CheckpointSnapshot:
     updated_at: datetime
     dry_run: bool = False
     dry_run_items: int = 0
+    archive_names: tuple[str, ...] | None = None
+    folder_paths: tuple[str, ...] | None = None
+    start_date: datetime | None = None
+    end_date: datetime | None = None
     version: int = 1
 
 

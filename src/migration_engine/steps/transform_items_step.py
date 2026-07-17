@@ -12,6 +12,7 @@ from collections.abc import Sequence
 from dataclasses import replace
 from datetime import datetime
 
+from ..configuration import MigrationConfiguration
 from ..contracts import (
     ExecutionContext,
     ExecutionReport,
@@ -89,11 +90,11 @@ class TransformItemsStep(PipelineStep):
         current_mailbox_address: str | None = None
         current_item_name: str | None = None
 
-        for mail_item, (archive, mailbox) in zip(
-            context.extraction_result.extracted_mail_items,
-            self._iter_mail_item_contexts(selected_vault_stores),
-            strict=True,
-        ):
+        for mail_item in context.extraction_result.extracted_mail_items:
+            archive, mailbox = self._resolve_mail_item_context(
+                selected_vault_stores,
+                mail_item,
+            )
             transformed_document = self._transform_mail_item(
                 archive_name=archive.name,
                 mailbox_address=mailbox.address,
@@ -153,6 +154,7 @@ class TransformItemsStep(PipelineStep):
                 )
             ),
             metrics=updated_metrics,
+            configuration=context.execution_context.configuration,
             started_at=started_at,
             completed_at=completed_at,
         )
@@ -293,6 +295,26 @@ class TransformItemsStep(PipelineStep):
                     mail_item_contexts.extend((archive, mailbox) for _ in mailbox.mail_items)
 
         return mail_item_contexts
+
+    def _resolve_mail_item_context(
+        self,
+        vault_stores: Sequence[SourceVaultStore],
+        mail_item: SourceMailItem,
+    ) -> tuple[SourceArchive, SourceMailbox]:
+        """Resolve the archive and mailbox that contain a mail item."""
+
+        for vault_store in vault_stores:
+            for archive in vault_store.archives:
+                for mailbox in archive.mailboxes:
+                    for candidate in mailbox.mail_items:
+                        if (
+                            candidate is mail_item
+                            or candidate.internet_message_id == mail_item.internet_message_id
+                        ):
+                            return archive, mailbox
+
+        message = "Transformation requires mail item context that matches the extracted source item"
+        raise ValueError(message)
 
     def _transform_mail_item(
         self,
@@ -439,6 +461,7 @@ class TransformItemsStep(PipelineStep):
         *,
         report: ExecutionReport | None,
         metrics: MigrationMetrics,
+        configuration: MigrationConfiguration,
         started_at: datetime,
         completed_at: datetime,
     ) -> ExecutionReport:
@@ -454,6 +477,10 @@ class TransformItemsStep(PipelineStep):
                 duration_seconds=duration_seconds,
                 completed=True,
                 metrics=metrics,
+                archive_names=configuration.archive_names,
+                folder_paths=configuration.folder_paths,
+                start_date=configuration.start_date,
+                end_date=configuration.end_date,
             )
 
         return ExecutionReport(
@@ -463,6 +490,10 @@ class TransformItemsStep(PipelineStep):
             duration_seconds=duration_seconds,
             completed=True,
             metrics=metrics,
+            archive_names=configuration.archive_names,
+            folder_paths=configuration.folder_paths,
+            start_date=configuration.start_date,
+            end_date=configuration.end_date,
         )
 
     def _resolve_tracker(

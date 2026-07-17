@@ -282,6 +282,7 @@ class PipelineRunner:
                         finished_at=failure_timestamp,
                         metrics=failure_metrics,
                         completed=False,
+                        configuration=execution_context.configuration,
                     )
                     self._rollback_steps(
                         completed_steps=completed_steps,
@@ -327,6 +328,7 @@ class PipelineRunner:
             finished_at=completion_timestamp,
             metrics=final_metrics,
             completed=True,
+            configuration=execution_context.configuration,
         )
         final_context = self._advance_context(
             current_context,
@@ -603,6 +605,7 @@ class PipelineRunner:
         finished_at: datetime,
         metrics: MigrationMetrics,
         completed: bool,
+        configuration: MigrationConfiguration,
     ) -> ExecutionReport:
         """Build an execution report for the current orchestration state."""
 
@@ -614,6 +617,10 @@ class PipelineRunner:
             duration_seconds=duration,
             completed=completed,
             metrics=metrics,
+            archive_names=configuration.archive_names,
+            folder_paths=configuration.folder_paths,
+            start_date=configuration.start_date,
+            end_date=configuration.end_date,
         )
 
     def _build_result(
@@ -825,10 +832,23 @@ class PipelineRunner:
             started_at=started_at,
             updated_at=updated_at,
         )
+        restored_report = ExecutionReport(
+            successful_steps=0,
+            failed_steps=0,
+            skipped_steps=0,
+            duration_seconds=restored_metrics.duration_seconds,
+            completed=False,
+            metrics=restored_metrics,
+            archive_names=resume_checkpoint.archive_names,
+            folder_paths=resume_checkpoint.folder_paths,
+            start_date=resume_checkpoint.start_date,
+            end_date=resume_checkpoint.end_date,
+        )
         self.state_machine = MigrationStateMachine(current_state=resumed_state)
         self.progress_tracker = ProgressTracker(
             snapshot=restored_snapshot,
             metrics=restored_metrics,
+            execution_report=restored_report,
             migration_state=resumed_state,
         )
         execution_context = ExecutionContext(
@@ -843,13 +863,14 @@ class PipelineRunner:
         )
         self.progress_tracker.update_execution_context(execution_context)
         self.progress_tracker.update_metrics(restored_metrics)
+        self.progress_tracker.update_execution_report(restored_report)
         self.progress_tracker.update_migration_state(resumed_state)
         current_context = execution_context
         current_step_context = MigrationStepContext(
             execution_context=execution_context,
             progress_tracker=self.progress_tracker,
             state_machine=self.state_machine,
-            execution_report=None,
+            execution_report=restored_report,
             checkpoint=resume_checkpoint,
         )
 
@@ -1015,6 +1036,8 @@ class PipelineRunner:
             successful_items=checkpoint.successful_items,
             failed_items=checkpoint.failed_items,
             skipped_items=checkpoint.skipped_items,
+            filtered_archives=checkpoint.filtered_archives,
+            filtered_items=checkpoint.filtered_items,
             retried_items=0,
             uploaded_items=checkpoint.uploaded_items,
             verification_failures=checkpoint.verification_failures,
@@ -1095,6 +1118,8 @@ class PipelineRunner:
             successful_items=metrics.successful_items,
             failed_items=metrics.failed_items,
             skipped_items=metrics.skipped_items,
+            filtered_archives=metrics.filtered_archives,
+            filtered_items=metrics.filtered_items,
             dry_run_items=metrics.dry_run_items,
             uploaded_items=metrics.uploaded_items,
             verification_failures=metrics.verification_failures,
@@ -1106,6 +1131,10 @@ class PipelineRunner:
             created_at=execution_context.started_at,
             updated_at=current_timestamp,
             dry_run=execution_context.configuration.dry_run,
+            archive_names=execution_context.configuration.archive_names,
+            folder_paths=execution_context.configuration.folder_paths,
+            start_date=execution_context.configuration.start_date,
+            end_date=execution_context.configuration.end_date,
             version=1,
         )
 
@@ -1154,12 +1183,22 @@ class PipelineRunner:
 
         if self.initial_context is not None:
             configuration = self.initial_context.execution_context.configuration
-            if configuration.dry_run or resume_checkpoint.dry_run:
-                return replace(configuration, dry_run=True)
+            return replace(
+                configuration,
+                dry_run=resume_checkpoint.dry_run or configuration.dry_run,
+                archive_names=resume_checkpoint.archive_names,
+                folder_paths=resume_checkpoint.folder_paths,
+                start_date=resume_checkpoint.start_date,
+                end_date=resume_checkpoint.end_date,
+            )
 
-            return configuration
-
-        return MigrationConfiguration(dry_run=resume_checkpoint.dry_run)
+        return MigrationConfiguration(
+            dry_run=resume_checkpoint.dry_run,
+            archive_names=resume_checkpoint.archive_names,
+            folder_paths=resume_checkpoint.folder_paths,
+            start_date=resume_checkpoint.start_date,
+            end_date=resume_checkpoint.end_date,
+        )
 
 
 __all__: list[str] = ["PipelineRunner"]

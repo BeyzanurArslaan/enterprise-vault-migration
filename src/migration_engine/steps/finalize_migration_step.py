@@ -11,6 +11,7 @@ from __future__ import annotations
 from dataclasses import replace
 from datetime import datetime
 
+from ..configuration import MigrationConfiguration
 from ..contracts import ExecutionContext, ExecutionReport, PipelineStep, ProgressSnapshot
 from ..execution_result import ExecutionResult
 from ..metrics import MigrationMetrics
@@ -87,6 +88,7 @@ class FinalizeMigrationStep(PipelineStep):
                 )
             ),
             metrics=final_metrics,
+            configuration=context.execution_context.configuration,
             started_at=started_at,
             completed_at=completed_at,
             failed_execution=failed_execution,
@@ -410,6 +412,7 @@ class FinalizeMigrationStep(PipelineStep):
         *,
         report: ExecutionReport | None,
         metrics: MigrationMetrics,
+        configuration: MigrationConfiguration,
         started_at: datetime,
         completed_at: datetime,
         failed_execution: bool,
@@ -426,6 +429,10 @@ class FinalizeMigrationStep(PipelineStep):
                 duration_seconds=duration_seconds,
                 completed=not failed_execution,
                 metrics=metrics,
+                archive_names=configuration.archive_names,
+                folder_paths=configuration.folder_paths,
+                start_date=configuration.start_date,
+                end_date=configuration.end_date,
             )
 
         return ExecutionReport(
@@ -435,6 +442,10 @@ class FinalizeMigrationStep(PipelineStep):
             duration_seconds=duration_seconds,
             completed=not failed_execution,
             metrics=metrics,
+            archive_names=configuration.archive_names,
+            folder_paths=configuration.folder_paths,
+            start_date=configuration.start_date,
+            end_date=configuration.end_date,
         )
 
     def _resolve_tracker(

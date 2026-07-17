@@ -50,10 +50,13 @@ def _build_mail_item(
     subject: str,
     message_size: int,
     attachment_sizes: tuple[int, ...],
+    folder_path: str = "/Inbox",
+    sent_at: datetime | None = None,
 ) -> MailItem:
     """Create a sample mail item for extraction tests."""
 
     timestamp = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
+    resolved_sent_at = sent_at or timestamp
     attachments = [
         _build_attachment(filename=f"{subject}-{index}.txt", size_bytes=size_bytes)
         for index, size_bytes in enumerate(attachment_sizes, start=1)
@@ -63,13 +66,14 @@ def _build_mail_item(
         sender="sender@example.com",
         body="Body",
         received_at=timestamp,
-        sent_at=timestamp,
+        sent_at=resolved_sent_at,
         modified_at=timestamp,
         internet_message_id=f"message-{subject}",
         conversation_id=f"conversation-{subject}",
         message_size=message_size,
         retention_policy=_build_retention_policy(),
         attachments=attachments,
+        folder_path=folder_path,
     )
 
 
@@ -139,6 +143,7 @@ def _build_step_context(
     vault_stores: tuple[VaultStore, ...],
     discovery_result: ArchiveDiscoveryResult,
     current_timestamp: datetime,
+    configuration: MigrationConfiguration | None = None,
     tracker: ProgressTracker | None = None,
     report: ExecutionReport | None = None,
     state: MigrationState = MigrationState.DISCOVERING,
@@ -148,7 +153,7 @@ def _build_step_context(
     started_at = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
     execution_context = ExecutionContext(
         migration_id="migration-1",
-        configuration=MigrationConfiguration(),
+        configuration=configuration or MigrationConfiguration(),
         started_at=started_at,
         current_step="discover",
         metrics=_build_metrics(),
@@ -345,3 +350,69 @@ def test_extract_items_step_is_deterministic_for_same_input() -> None:
     assert first_result.extraction_result == second_result.extraction_result
     assert first_result.execution_report == second_result.execution_report
     assert first_result.execution_context.metrics == second_result.execution_context.metrics
+
+
+def test_extract_items_step_applies_folder_and_date_filters() -> None:
+    """The step should filter mail items by folder path and sent date."""
+
+    inbox_before = _build_mail_item(
+        subject="inbox-before",
+        message_size=100,
+        attachment_sizes=(),
+        folder_path="/Inbox",
+        sent_at=datetime(2026, 1, 1, 8, 0, tzinfo=UTC),
+    )
+    nested_inbox_match = _build_mail_item(
+        subject="nested-match",
+        message_size=120,
+        attachment_sizes=(10,),
+        folder_path="/Inbox/Projects",
+        sent_at=datetime(2026, 1, 1, 12, 0, tzinfo=UTC),
+    )
+    sent_after_window = _build_mail_item(
+        subject="after-window",
+        message_size=140,
+        attachment_sizes=(),
+        folder_path="/Archive",
+        sent_at=datetime(2026, 1, 1, 18, 0, tzinfo=UTC),
+    )
+    archive = _build_archive(
+        "Archive A1",
+        (
+            _build_mailbox("alice@example.com", (inbox_before, nested_inbox_match)),
+            _build_mailbox("bob@example.com", (sent_after_window,)),
+        ),
+    )
+    vault_stores = (_build_vault_store("Vault Store A", (archive,)),)
+    discovery_result = ArchiveDiscoveryResult(
+        vault_store_names=("Vault Store A",),
+        archive_names=("Archive A1",),
+        vault_store_count=1,
+        archive_count=1,
+    )
+    configuration = MigrationConfiguration(
+        folder_paths=("/Inbox",),
+        start_date=datetime(2026, 1, 1, 10, 0, tzinfo=UTC),
+        end_date=datetime(2026, 1, 1, 13, 0, tzinfo=UTC),
+    )
+    context = _build_step_context(
+        vault_stores=vault_stores,
+        discovery_result=discovery_result,
+        current_timestamp=datetime(2026, 1, 1, 13, 0, tzinfo=UTC),
+        configuration=configuration,
+        tracker=ProgressTracker(snapshot=_build_snapshot(), metrics=_build_metrics()),
+    )
+
+    updated_context = ExtractItemsStep().extract(context)
+
+    assert updated_context.extraction_result is not None
+    assert updated_context.extraction_result.total_items == 1
+    assert updated_context.extraction_result.extracted_mail_items == (nested_inbox_match,)
+    assert updated_context.execution_context.metrics is not None
+    assert updated_context.execution_context.metrics.filtered_archives == 0
+    assert updated_context.execution_context.metrics.filtered_items == 2
+    assert updated_context.execution_report is not None
+    assert updated_context.execution_report.archive_names == configuration.archive_names
+    assert updated_context.execution_report.folder_paths == configuration.folder_paths
+    assert updated_context.execution_report.start_date == configuration.start_date
+    assert updated_context.execution_report.end_date == configuration.end_date

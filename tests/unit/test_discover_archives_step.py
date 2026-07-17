@@ -72,6 +72,7 @@ def _build_step_context(
     *,
     current_timestamp: datetime,
     state: MigrationState,
+    configuration: MigrationConfiguration | None = None,
     tracker: ProgressTracker | None = None,
     report: ExecutionReport | None = None,
 ) -> MigrationStepContext:
@@ -79,7 +80,7 @@ def _build_step_context(
 
     execution_context = ExecutionContext(
         migration_id="migration-1",
-        configuration=MigrationConfiguration(),
+        configuration=configuration or MigrationConfiguration(),
         started_at=datetime(2026, 1, 1, 12, 0, tzinfo=UTC),
         current_step=None,
         metrics=_build_metrics(),
@@ -162,6 +163,41 @@ def test_discover_archives_step_updates_context_and_orchestration_state() -> Non
     assert tracker.current_execution_context is updated_context.execution_context
     assert tracker.current_execution_report is updated_context.execution_report
     assert updated_context.vault_stores == vault_stores
+
+
+def test_discover_archives_step_applies_archive_filters_and_preserves_report_metadata() -> None:
+    """The step should filter archive discovery by configured archive names."""
+
+    discovered_at = datetime(2026, 1, 1, 12, 0, tzinfo=UTC) + timedelta(seconds=4)
+    vault_stores = (
+        _build_vault_store("Vault Store A", ("Archive A1", "Archive A2")),
+        _build_vault_store("Vault Store B", ("Archive B1",)),
+    )
+    configuration = MigrationConfiguration(archive_names=("Archive A2", "Archive B1"))
+    tracker = ProgressTracker(snapshot=_build_snapshot(), metrics=_build_metrics())
+    context = _build_step_context(
+        current_timestamp=discovered_at,
+        state=MigrationState.INITIALIZING,
+        configuration=configuration,
+        tracker=tracker,
+    )
+
+    updated_context = DiscoverArchivesStep(vault_stores=vault_stores).discover(context)
+
+    assert updated_context.discovery_result == ArchiveDiscoveryResult(
+        vault_store_names=("Vault Store A", "Vault Store B"),
+        archive_names=("Archive A2", "Archive B1"),
+        vault_store_count=2,
+        archive_count=2,
+    )
+    assert updated_context.execution_context.metrics is not None
+    assert updated_context.execution_context.metrics.filtered_archives == 1
+    assert updated_context.execution_context.metrics.filtered_items == 0
+    assert updated_context.execution_report is not None
+    assert updated_context.execution_report.archive_names == configuration.archive_names
+    assert updated_context.execution_report.folder_paths is None
+    assert updated_context.execution_report.start_date is None
+    assert updated_context.execution_report.end_date is None
 
 
 def test_discover_archives_step_handles_empty_vault() -> None:

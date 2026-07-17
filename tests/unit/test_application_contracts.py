@@ -69,6 +69,10 @@ def test_application_contracts_are_immutable() -> None:
     assert upload.dry_run is False
     assert assessment.estimated_duration_minutes == 5
     assert MigrationConfiguration().dry_run is False
+    assert MigrationConfiguration().archive_names is None
+    assert MigrationConfiguration().folder_paths is None
+    assert MigrationConfiguration().start_date is None
+    assert MigrationConfiguration().end_date is None
     assert start_command.request is request
     assert pause_command.job_id is not None
     assert resume_command.job_id is not None

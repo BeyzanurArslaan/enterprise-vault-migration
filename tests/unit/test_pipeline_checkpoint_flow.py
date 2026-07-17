@@ -8,10 +8,18 @@ from pathlib import Path
 
 from application.services import CheckpointService
 from migration_engine.checkpoint import CheckpointSnapshot
-from migration_engine.contracts import ExecutionContext, ExecutionReport, PipelineStep
+from migration_engine.configuration import MigrationConfiguration
+from migration_engine.contracts import (
+    ExecutionContext,
+    ExecutionReport,
+    PipelineStep,
+    ProgressSnapshot,
+)
 from migration_engine.metrics import MigrationMetrics
+from migration_engine.progress_tracker import ProgressTracker
 from migration_engine.runner import PipelineRunner
 from migration_engine.state_machine import MigrationState
+from migration_engine.step_context import MigrationStepContext
 from ports import CheckpointRepositoryPort
 from ports.identifier_generator_port import IdentifierGeneratorPort
 
@@ -248,6 +256,64 @@ def test_pipeline_runner_saves_checkpoints_after_each_successful_step() -> None:
     assert runner.execution_result == result
 
 
+def test_pipeline_runner_persists_filter_metadata_in_checkpoints() -> None:
+    """The runner should store configured filters in persisted checkpoints."""
+
+    repository = _RecordingCheckpointRepository()
+    checkpoint_service = CheckpointService(checkpoint_repository=repository)
+    identifier_generator = _DeterministicIdentifierGenerator()
+    started_at = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
+    execution_context = ExecutionContext(
+        migration_id="migration-job-1",
+        configuration=MigrationConfiguration(
+            archive_names=("Archive A1",),
+            folder_paths=("/Inbox",),
+            start_date=started_at,
+            end_date=started_at,
+        ),
+        started_at=started_at,
+        current_step=None,
+        metrics=_build_metrics(1),
+        progress_tracker=ProgressTracker(
+            snapshot=ProgressSnapshot(
+                total_items=1,
+                processed_items=1,
+                successful_items=1,
+                failed_items=0,
+                skipped_items=0,
+                current_archive=None,
+                current_mailbox=None,
+                current_item=None,
+                started_at=started_at,
+                last_updated=started_at,
+            ),
+            metrics=_build_metrics(1),
+        ),
+        state=MigrationState.INITIALIZING,
+        current_timestamp=started_at,
+    )
+    initial_context = MigrationStepContext(
+        execution_context=execution_context,
+        progress_tracker=execution_context.progress_tracker,
+        state_machine=None,
+        execution_report=None,
+    )
+    runner = PipelineRunner(
+        [DiscoverArchivesStep(_build_report(1))],
+        checkpoint_service=checkpoint_service,
+        identifier_generator=identifier_generator,
+        initial_context=initial_context,
+    )
+
+    runner.run()
+
+    checkpoint = repository.saved_checkpoints[-1]
+    assert checkpoint.archive_names == ("Archive A1",)
+    assert checkpoint.folder_paths == ("/Inbox",)
+    assert checkpoint.start_date == started_at
+    assert checkpoint.end_date == started_at
+
+
 def test_pipeline_runner_keeps_previous_checkpoint_after_later_failure() -> None:
     """The runner should preserve the last successful checkpoint on failure."""
 
@@ -330,6 +396,8 @@ def test_pipeline_runner_checkpoint_contract_stays_serializable_and_minimal() ->
         "successful_items",
         "failed_items",
         "skipped_items",
+        "filtered_archives",
+        "filtered_items",
         "uploaded_items",
         "verification_failures",
         "current_state",
@@ -337,6 +405,10 @@ def test_pipeline_runner_checkpoint_contract_stays_serializable_and_minimal() ->
         "updated_at",
         "dry_run",
         "dry_run_items",
+        "archive_names",
+        "folder_paths",
+        "start_date",
+        "end_date",
         "version",
     }
     assert all(

@@ -10,6 +10,7 @@ from adapters.database import InMemoryCheckpointRepository
 from adapters.target import MockStorionXTargetAdapter
 from application.dto import UploadResult
 from application.services import CheckpointService
+from migration_engine.checkpoint import CheckpointSnapshot
 from migration_engine.contracts import PipelineStep
 from migration_engine.pipeline import MigrationPipeline
 from migration_engine.runner import PipelineRunner
@@ -192,6 +193,36 @@ def _build_pipeline(steps: tuple[PipelineStep, ...]) -> MigrationPipeline:
     return MigrationPipeline(steps=steps)
 
 
+def _build_resume_checkpoint() -> CheckpointSnapshot:
+    """Create a deterministic checkpoint snapshot for resume filter tests."""
+
+    timestamp = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
+    return CheckpointSnapshot(
+        checkpoint_id="migration-1:DiscoverArchivesStep",
+        migration_job_id="migration-1",
+        last_completed_step="DiscoverArchivesStep",
+        last_processed_item_id=None,
+        processed_items=1,
+        successful_items=1,
+        failed_items=0,
+        skipped_items=0,
+        filtered_archives=0,
+        filtered_items=0,
+        uploaded_items=0,
+        verification_failures=0,
+        current_state=MigrationState.DISCOVERING.value,
+        created_at=timestamp,
+        updated_at=timestamp,
+        dry_run=False,
+        dry_run_items=0,
+        archive_names=("Archive One",),
+        folder_paths=("/Inbox",),
+        start_date=timestamp,
+        end_date=timestamp,
+        version=1,
+    )
+
+
 def test_pipeline_runner_resumes_from_each_checkpoint_stage() -> None:
     """The runner should resume from every supported checkpoint stage."""
 
@@ -323,3 +354,26 @@ def test_pipeline_runner_resume_matches_fresh_execution_for_same_source() -> Non
     assert fresh_target_port.upload_calls == 1
     assert len(resumed_target_port.document_storage.list()) == 1
     assert len(fresh_target_port.document_storage.list()) == 1
+
+
+def test_pipeline_runner_restores_filters_from_checkpoint() -> None:
+    """The runner should restore filter configuration from the checkpoint."""
+
+    vault_stores = _build_vault_stores()
+    target_port = _CountingTargetAdapter(started_at=datetime(2026, 1, 1, 12, 0, tzinfo=UTC))
+    runner = _DeterministicPipelineRunner(
+        pipeline=_build_pipeline(_build_steps(vault_stores=vault_stores, target_port=target_port)),
+        timestamps=_timestamp_sequence(),
+        checkpoint_service=CheckpointService(checkpoint_repository=InMemoryCheckpointRepository()),
+        identifier_generator=_DeterministicIdentifierGenerator(),
+    )
+    checkpoint = _build_resume_checkpoint()
+
+    result = runner.run(resume_checkpoint=checkpoint)
+
+    assert result.success is True
+    assert runner.execution_context is not None
+    assert runner.execution_context.configuration.archive_names == checkpoint.archive_names
+    assert runner.execution_context.configuration.folder_paths == checkpoint.folder_paths
+    assert runner.execution_context.configuration.start_date == checkpoint.start_date
+    assert runner.execution_context.configuration.end_date == checkpoint.end_date

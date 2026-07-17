@@ -5,7 +5,8 @@ foundation. The model captures structural execution metrics and no behavior.
 The ``idempotent_replays`` counter records successful upload replays that
 reused an existing target document instead of creating a new record. The
 ``dry_run_items`` counter records uploads that were intentionally skipped in
-analysis-only execution mode.
+analysis-only execution mode. The ``filtered_archives`` and ``filtered_items``
+fields record source entities excluded by configured migration filters.
 """
 
 from __future__ import annotations
@@ -29,6 +30,8 @@ class MigrationMetrics:
     successful_items: int = 0
     failed_items: int = 0
     skipped_items: int = 0
+    filtered_archives: int = 0
+    filtered_items: int = 0
     retried_items: int = 0
     idempotent_replays: int = 0
     dry_run_items: int = 0

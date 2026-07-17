@@ -112,6 +112,10 @@ class SourceMailItem(Protocol):
     def attachments(self) -> Sequence[SourceAttachment]:
         """Return the attachments."""
 
+    @property
+    def folder_path(self) -> str:
+        """Return the source folder path for the mail item."""
+
 
 class SourceMailbox(Protocol):
     """Structural contract for a source mailbox."""

@@ -20,6 +20,7 @@ from domain.exceptions import IdempotencyConflictError
 from domain.value_objects.identifiers import MigrationItemId
 from ports import StorionXTargetPort
 
+from ..configuration import MigrationConfiguration
 from ..contracts import ExecutionContext, ExecutionReport, PipelineStep, ProgressSnapshot
 from ..metrics import MigrationMetrics
 from ..progress_tracker import ProgressTracker
@@ -258,6 +259,7 @@ class UploadItemsStep(PipelineStep):
             ),
             metrics=updated_metrics,
             upload_result=upload_result,
+            configuration=context.execution_context.configuration,
             started_at=started_at,
             completed_at=completed_at,
             completed=completed,
@@ -447,6 +449,7 @@ class UploadItemsStep(PipelineStep):
         report: ExecutionReport | None,
         metrics: MigrationMetrics,
         upload_result: UploadBatchResult,
+        configuration: MigrationConfiguration,
         started_at: datetime,
         completed_at: datetime,
         completed: bool,
@@ -464,6 +467,10 @@ class UploadItemsStep(PipelineStep):
                 duration_seconds=duration_seconds,
                 completed=completed,
                 metrics=metrics,
+                archive_names=configuration.archive_names,
+                folder_paths=configuration.folder_paths,
+                start_date=configuration.start_date,
+                end_date=configuration.end_date,
             )
 
         return ExecutionReport(
@@ -473,6 +480,10 @@ class UploadItemsStep(PipelineStep):
             duration_seconds=duration_seconds,
             completed=completed,
             metrics=metrics,
+            archive_names=configuration.archive_names,
+            folder_paths=configuration.folder_paths,
+            start_date=configuration.start_date,
+            end_date=configuration.end_date,
         )
 
     def _resolve_tracker(

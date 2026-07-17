@@ -32,6 +32,7 @@ class MailDatasetBuilder:
         cc_recipients: Sequence[str] | None = None,
         bcc_recipients: Sequence[str] | None = None,
         attachments: Sequence[Attachment] | None = None,
+        folder_path: str = "/Inbox",
     ) -> MailItem:
         """Construct a mail item from already-built primitives."""
 
@@ -50,6 +51,7 @@ class MailDatasetBuilder:
             cc_recipients=list(cc_recipients or []),
             bcc_recipients=list(bcc_recipients or []),
             attachments=list(attachments or []),
+            folder_path=folder_path,
         )
 
 

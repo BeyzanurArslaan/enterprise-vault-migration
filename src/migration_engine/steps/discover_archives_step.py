@@ -11,6 +11,7 @@ from collections.abc import Sequence
 from dataclasses import replace
 from datetime import datetime
 
+from ..configuration import MigrationConfiguration
 from ..contracts import (
     ExecutionContext,
     ExecutionReport,
@@ -72,6 +73,24 @@ class DiscoverArchivesStep(PipelineStep):
         discovered_at = context.execution_context.current_timestamp or started_at
         vault_stores = self._resolve_vault_stores()
         discovery_result = self._build_discovery_result(vault_stores)
+        configuration = context.execution_context.configuration
+        filtered_archives = 0
+        archive_names = discovery_result.archive_names
+        if configuration.archive_names is not None:
+            allowed_archive_names = set(configuration.archive_names)
+            archive_names = tuple(
+                archive_name
+                for archive_name in discovery_result.archive_names
+                if archive_name in allowed_archive_names
+            )
+            filtered_archives = len(discovery_result.archive_names) - len(archive_names)
+
+        discovery_result = ArchiveDiscoveryResult(
+            vault_store_names=discovery_result.vault_store_names,
+            archive_names=archive_names,
+            vault_store_count=discovery_result.vault_store_count,
+            archive_count=len(archive_names),
+        )
         updated_state = self._resolve_state(context.state_machine)
         updated_metrics = self._resolve_metrics(
             metrics=(
@@ -83,6 +102,7 @@ class DiscoverArchivesStep(PipelineStep):
                 )
             ),
             discovery_result=discovery_result,
+            filtered_archives=filtered_archives,
             started_at=started_at,
             discovered_at=discovered_at,
         )
@@ -101,6 +121,7 @@ class DiscoverArchivesStep(PipelineStep):
                 )
             ),
             metrics=updated_metrics,
+            configuration=configuration,
             started_at=started_at,
             discovered_at=discovered_at,
         )
@@ -201,6 +222,7 @@ class DiscoverArchivesStep(PipelineStep):
         *,
         metrics: MigrationMetrics | None,
         discovery_result: ArchiveDiscoveryResult,
+        filtered_archives: int,
         started_at: datetime,
         discovered_at: datetime,
     ) -> MigrationMetrics:
@@ -220,6 +242,8 @@ class DiscoverArchivesStep(PipelineStep):
                 successful_items=processed_items,
                 failed_items=0,
                 skipped_items=0,
+                filtered_archives=filtered_archives,
+                filtered_items=0,
                 retried_items=0,
                 uploaded_items=0,
                 verification_failures=0,
@@ -239,6 +263,8 @@ class DiscoverArchivesStep(PipelineStep):
             successful_items=processed_items,
             failed_items=0,
             skipped_items=0,
+            filtered_archives=filtered_archives,
+            filtered_items=0,
             retried_items=0,
             uploaded_items=0,
             verification_failures=0,
@@ -252,6 +278,7 @@ class DiscoverArchivesStep(PipelineStep):
         *,
         report: ExecutionReport | None,
         metrics: MigrationMetrics,
+        configuration: MigrationConfiguration,
         started_at: datetime,
         discovered_at: datetime,
     ) -> ExecutionReport:
@@ -267,6 +294,10 @@ class DiscoverArchivesStep(PipelineStep):
                 duration_seconds=duration_seconds,
                 completed=True,
                 metrics=metrics,
+                archive_names=configuration.archive_names,
+                folder_paths=configuration.folder_paths,
+                start_date=configuration.start_date,
+                end_date=configuration.end_date,
             )
 
         return ExecutionReport(
@@ -276,6 +307,10 @@ class DiscoverArchivesStep(PipelineStep):
             duration_seconds=duration_seconds,
             completed=True,
             metrics=metrics,
+            archive_names=configuration.archive_names,
+            folder_paths=configuration.folder_paths,
+            start_date=configuration.start_date,
+            end_date=configuration.end_date,
         )
 
     def _resolve_tracker(
