@@ -1,7 +1,7 @@
 """Orchestrators package for the application layer.
 
-This package hosts application-level orchestrators responsible for coordinating
-use cases and domain interactions in a cohesive flow.
+This package retains the historical application import path while delegating to
+the canonical orchestrator implementation in the migration engine package.
 """
 
 from __future__ import annotations
