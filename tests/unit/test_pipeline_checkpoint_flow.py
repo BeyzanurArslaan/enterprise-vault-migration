@@ -335,6 +335,8 @@ def test_pipeline_runner_checkpoint_contract_stays_serializable_and_minimal() ->
         "current_state",
         "created_at",
         "updated_at",
+        "dry_run",
+        "dry_run_items",
         "version",
     }
     assert all(

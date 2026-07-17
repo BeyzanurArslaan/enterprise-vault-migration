@@ -3,7 +3,9 @@
 This module defines the immutable metrics model used by the migration engine
 foundation. The model captures structural execution metrics and no behavior.
 The ``idempotent_replays`` counter records successful upload replays that
-reused an existing target document instead of creating a new record.
+reused an existing target document instead of creating a new record. The
+``dry_run_items`` counter records uploads that were intentionally skipped in
+analysis-only execution mode.
 """
 
 from __future__ import annotations
@@ -29,6 +31,7 @@ class MigrationMetrics:
     skipped_items: int = 0
     retried_items: int = 0
     idempotent_replays: int = 0
+    dry_run_items: int = 0
     uploaded_items: int = 0
     verification_failures: int = 0
     total_bytes: int = 0

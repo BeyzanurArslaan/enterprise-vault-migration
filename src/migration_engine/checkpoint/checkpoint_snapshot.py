@@ -3,7 +3,9 @@
 This module defines the immutable continuation data captured for checkpointing
 without storing raw email content, attachments, credentials, services, or
 adapter references. The snapshot intentionally contains only the minimal
-serializable state required to resume orchestration in a later sprint.
+serializable state required to resume orchestration in a later sprint. The
+``dry_run`` flag and ``dry_run_items`` counter preserve analysis-only runs
+without storing any target-side state.
 """
 
 from __future__ import annotations
@@ -29,6 +31,8 @@ class CheckpointSnapshot:
     current_state: str
     created_at: datetime
     updated_at: datetime
+    dry_run: bool = False
+    dry_run_items: int = 0
     version: int = 1
 
 

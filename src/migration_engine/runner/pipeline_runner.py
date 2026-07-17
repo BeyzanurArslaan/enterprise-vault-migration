@@ -833,11 +833,7 @@ class PipelineRunner:
         )
         execution_context = ExecutionContext(
             migration_id=resume_checkpoint.migration_job_id,
-            configuration=(
-                self.initial_context.execution_context.configuration
-                if self.initial_context is not None
-                else MigrationConfiguration()
-            ),
+            configuration=self._resolve_resume_configuration(resume_checkpoint),
             started_at=started_at,
             current_step=resume_checkpoint.last_completed_step,
             metrics=restored_metrics,
@@ -1022,6 +1018,7 @@ class PipelineRunner:
             retried_items=0,
             uploaded_items=checkpoint.uploaded_items,
             verification_failures=checkpoint.verification_failures,
+            dry_run_items=checkpoint.dry_run_items,
             total_bytes=0,
             started_at=started_at,
             finished_at=finished_at,
@@ -1098,6 +1095,7 @@ class PipelineRunner:
             successful_items=metrics.successful_items,
             failed_items=metrics.failed_items,
             skipped_items=metrics.skipped_items,
+            dry_run_items=metrics.dry_run_items,
             uploaded_items=metrics.uploaded_items,
             verification_failures=metrics.verification_failures,
             current_state=(
@@ -1107,6 +1105,7 @@ class PipelineRunner:
             ),
             created_at=execution_context.started_at,
             updated_at=current_timestamp,
+            dry_run=execution_context.configuration.dry_run,
             version=1,
         )
 
@@ -1146,6 +1145,21 @@ class PipelineRunner:
             return self.identifier_generator.next_job_id()
 
         return f"migration-{uuid4().hex}"
+
+    def _resolve_resume_configuration(
+        self,
+        resume_checkpoint: CheckpointSnapshot,
+    ) -> MigrationConfiguration:
+        """Return the configuration used when resuming from a checkpoint."""
+
+        if self.initial_context is not None:
+            configuration = self.initial_context.execution_context.configuration
+            if configuration.dry_run or resume_checkpoint.dry_run:
+                return replace(configuration, dry_run=True)
+
+            return configuration
+
+        return MigrationConfiguration(dry_run=resume_checkpoint.dry_run)
 
 
 __all__: list[str] = ["PipelineRunner"]

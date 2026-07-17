@@ -333,6 +333,10 @@ class FinalizeMigrationStep(PipelineStep):
         successful_items = self._resolve_successful_items(context)
         failed_items = self._resolve_failed_items(context)
         skipped_items = self._resolve_skipped_items(context)
+        dry_run_mode = context.execution_context.configuration.dry_run or (
+            context.upload_result is not None
+            and any(result.dry_run for result in context.upload_result.item_results)
+        )
         uploaded_items = (
             len(context.upload_result.uploaded_documents)
             if context.upload_result is not None
@@ -347,6 +351,17 @@ class FinalizeMigrationStep(PipelineStep):
         duration_seconds = max((completed_at - started_at).total_seconds(), 0.0)
         throughput = processed_items / duration_seconds if duration_seconds > 0.0 else 0.0
         average_item_size = processed_bytes // processed_items if processed_items > 0 else 0
+        dry_run_items = (
+            context.execution_context.metrics.dry_run_items
+            if context.execution_context.metrics is not None
+            else sum(
+                1
+                for result in (
+                    context.upload_result.item_results if context.upload_result is not None else ()
+                )
+                if result.dry_run
+            )
+        )
 
         if metrics is not None:
             return replace(
@@ -357,12 +372,13 @@ class FinalizeMigrationStep(PipelineStep):
                 processed_bytes=processed_bytes,
                 total_items=total_items,
                 processed_items=processed_items,
-                successful_items=successful_items,
-                failed_items=failed_items,
+                successful_items=0 if dry_run_mode else successful_items,
+                failed_items=0 if dry_run_mode else failed_items,
                 skipped_items=skipped_items,
                 retried_items=0,
-                uploaded_items=uploaded_items,
-                verification_failures=verification_failures,
+                uploaded_items=0 if dry_run_mode else uploaded_items,
+                verification_failures=0 if dry_run_mode else verification_failures,
+                dry_run_items=dry_run_items,
                 total_bytes=processed_bytes,
                 started_at=started_at,
                 finished_at=completed_at,
@@ -377,12 +393,13 @@ class FinalizeMigrationStep(PipelineStep):
             peak_memory_usage_mb=None,
             total_items=total_items,
             processed_items=processed_items,
-            successful_items=successful_items,
-            failed_items=failed_items,
+            successful_items=0 if dry_run_mode else successful_items,
+            failed_items=0 if dry_run_mode else failed_items,
             skipped_items=skipped_items,
             retried_items=0,
-            uploaded_items=uploaded_items,
-            verification_failures=verification_failures,
+            uploaded_items=0 if dry_run_mode else uploaded_items,
+            verification_failures=0 if dry_run_mode else verification_failures,
+            dry_run_items=dry_run_items,
             total_bytes=processed_bytes,
             started_at=started_at,
             finished_at=completed_at,

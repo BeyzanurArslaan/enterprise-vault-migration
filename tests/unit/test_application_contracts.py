@@ -19,6 +19,7 @@ from application.dto import (
 from application.queries import AuditLogQuery, CheckpointQuery, MigrationStatusQuery
 from domain.enums.job_status import JobStatus
 from domain.value_objects.identifiers import ArchiveId, MigrationItemId, MigrationJobId
+from migration_engine.configuration import MigrationConfiguration
 
 
 def test_application_contracts_are_immutable() -> None:
@@ -61,10 +62,13 @@ def test_application_contracts_are_immutable() -> None:
     audit_query = AuditLogQuery(job_id=MigrationJobId(uuid4()))
 
     assert request.job_name == "demo"
+    assert request.dry_run is True
     assert result.status == JobStatus.RUNNING
     assert upload.success is True
     assert upload.idempotent_replay is False
+    assert upload.dry_run is False
     assert assessment.estimated_duration_minutes == 5
+    assert MigrationConfiguration().dry_run is False
     assert start_command.request is request
     assert pause_command.job_id is not None
     assert resume_command.job_id is not None

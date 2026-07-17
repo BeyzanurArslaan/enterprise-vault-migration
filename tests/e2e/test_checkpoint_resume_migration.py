@@ -12,10 +12,13 @@ from application.commands import ResumeMigrationCommand
 from application.dto import UploadResult
 from application.services import CheckpointService
 from application.use_cases.resume_migration import ResumeMigrationUseCase
+from migration_engine.configuration import MigrationConfiguration
+from migration_engine.contracts import ExecutionContext
 from migration_engine.orchestrator import MigrationOrchestrator
 from migration_engine.pipeline import MigrationPipeline
 from migration_engine.runner import PipelineRunner
 from migration_engine.state_machine import MigrationState
+from migration_engine.step_context import MigrationStepContext
 from migration_engine.steps import (
     DiscoverArchivesStep,
     ExtractItemsStep,
@@ -74,6 +77,7 @@ class _DeterministicPipelineRunner(PipelineRunner):
         timestamps: Iterator[datetime],
         checkpoint_service: CheckpointService | None = None,
         identifier_generator: IdentifierGeneratorPort | None = None,
+        initial_context: MigrationStepContext | None = None,
     ) -> None:
         """Create a pipeline runner with a deterministic timestamp source."""
 
@@ -81,6 +85,7 @@ class _DeterministicPipelineRunner(PipelineRunner):
             pipeline=pipeline,
             checkpoint_service=checkpoint_service,
             identifier_generator=identifier_generator,
+            initial_context=initial_context,
         )
         self._timestamps = timestamps
 
@@ -183,6 +188,23 @@ def _build_pipeline(
     )
 
 
+def _build_dry_run_initial_context() -> MigrationStepContext:
+    """Create an immutable initial context that enables dry-run execution."""
+
+    started_at = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
+    execution_context = ExecutionContext(
+        migration_id="migration-1",
+        configuration=MigrationConfiguration(dry_run=True),
+        started_at=started_at,
+        current_step=None,
+        metrics=None,
+        progress_tracker=None,
+        state=MigrationState.CREATED,
+        current_timestamp=started_at,
+    )
+    return MigrationStepContext(execution_context=execution_context)
+
+
 def test_checkpoint_resume_migration_completes_without_duplication() -> None:
     """The application use case should resume and finish a checkpointed migration."""
 
@@ -239,3 +261,60 @@ def test_checkpoint_resume_migration_completes_without_duplication() -> None:
     assert resumed_runner.current_step_context.checkpoint == final_checkpoint
     assert resumed_runner.current_step_context.execution_context.state == MigrationState.COMPLETED
     assert resumed_runner.execution_result == result
+
+
+def test_checkpoint_resume_migration_preserves_dry_run_mode() -> None:
+    """Dry-run checkpoints should resume without touching the target system."""
+
+    checkpoint_repository = InMemoryCheckpointRepository()
+    checkpoint_service = CheckpointService(checkpoint_repository=checkpoint_repository)
+    target_port = _CountingTargetAdapter(started_at=datetime(2026, 1, 1, 12, 0, tzinfo=UTC))
+    vault_stores = _build_vault_stores()
+    identifier_generator = _DeterministicIdentifierGenerator()
+    initial_context = _build_dry_run_initial_context()
+
+    partial_pipeline = MigrationPipeline(
+        steps=(
+            DiscoverArchivesStep(vault_stores=vault_stores),
+            ExtractItemsStep(vault_stores=vault_stores),
+            TransformItemsStep(vault_stores=vault_stores),
+            UploadItemsStep(target_port=target_port),
+        ),
+    )
+    partial_runner = _DeterministicPipelineRunner(
+        pipeline=partial_pipeline,
+        timestamps=_timestamp_sequence(),
+        checkpoint_service=checkpoint_service,
+        identifier_generator=identifier_generator,
+        initial_context=initial_context,
+    )
+    partial_runner.run()
+
+    checkpoint = checkpoint_repository.load_checkpoint("migration-1")
+    assert checkpoint is not None
+    assert checkpoint.dry_run is True
+    assert checkpoint.dry_run_items == 1
+    assert checkpoint.uploaded_items == 0
+    assert target_port.upload_calls == 0
+    assert target_port.document_storage.list() == []
+
+    resumed_runner = _DeterministicPipelineRunner(
+        pipeline=_build_pipeline(vault_stores=vault_stores, target_port=target_port),
+        timestamps=_timestamp_sequence(),
+        checkpoint_service=checkpoint_service,
+        identifier_generator=identifier_generator,
+    )
+
+    result = resumed_runner.run(resume_checkpoint=checkpoint)
+
+    final_checkpoint = checkpoint_repository.load_checkpoint("migration-1")
+    assert result.success is True
+    assert final_checkpoint is not None
+    assert final_checkpoint.dry_run is True
+    assert final_checkpoint.last_completed_step == "FinalizeMigrationStep"
+    assert final_checkpoint.current_state == MigrationState.COMPLETED.value
+    assert target_port.upload_calls == 0
+    assert target_port.document_storage.list() == []
+    assert resumed_runner.current_step_context is not None
+    assert resumed_runner.current_step_context.checkpoint == final_checkpoint
+    assert resumed_runner.current_step_context.execution_context.configuration.dry_run is True

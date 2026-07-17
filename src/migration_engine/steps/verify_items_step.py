@@ -68,6 +68,9 @@ class VerifyItemsStep(PipelineStep):
             message = "Verification requires upload results"
             raise ValueError(message)
 
+        dry_run_mode = context.execution_context.configuration.dry_run or any(
+            result.dry_run for result in context.upload_result.item_results
+        )
         started_at = context.execution_context.started_at
         completed_at = context.execution_context.current_timestamp or started_at
         verified_document_ids: list[str] = []
@@ -77,29 +80,30 @@ class VerifyItemsStep(PipelineStep):
         metadata_mismatches: list[str] = []
         current_document: TransformedDocument | None = None
 
-        for transformed_document in context.upload_result.uploaded_documents:
-            current_document = transformed_document
-            target_document = self._target_port.get_uploaded_document(
-                transformed_document.source_identifier,
-            )
-            if target_document is None:
-                missing_document_ids.append(transformed_document.source_identifier)
+        if not dry_run_mode:
+            for transformed_document in context.upload_result.uploaded_documents:
+                current_document = transformed_document
+                target_document = self._target_port.get_uploaded_document(
+                    transformed_document.source_identifier,
+                )
+                if target_document is None:
+                    missing_document_ids.append(transformed_document.source_identifier)
+                    failed_document_ids.append(transformed_document.source_identifier)
+                    continue
+
+                checksum_matches = target_document.checksum == transformed_document.checksum
+                metadata_matches = self._document_signature(
+                    target_document
+                ) == self._document_signature(transformed_document)
+                if checksum_matches and metadata_matches:
+                    verified_document_ids.append(transformed_document.source_identifier)
+                    continue
+
                 failed_document_ids.append(transformed_document.source_identifier)
-                continue
-
-            checksum_matches = target_document.checksum == transformed_document.checksum
-            metadata_matches = self._document_signature(
-                target_document
-            ) == self._document_signature(transformed_document)
-            if checksum_matches and metadata_matches:
-                verified_document_ids.append(transformed_document.source_identifier)
-                continue
-
-            failed_document_ids.append(transformed_document.source_identifier)
-            if not checksum_matches:
-                checksum_mismatches.append(transformed_document.source_identifier)
-            if not metadata_matches:
-                metadata_mismatches.append(transformed_document.source_identifier)
+                if not checksum_matches:
+                    checksum_mismatches.append(transformed_document.source_identifier)
+                if not metadata_matches:
+                    metadata_mismatches.append(transformed_document.source_identifier)
 
         verification_result = VerificationResult(
             verified_document_ids=tuple(verified_document_ids),
@@ -127,6 +131,7 @@ class VerifyItemsStep(PipelineStep):
             verification_result=verification_result,
             started_at=started_at,
             completed_at=completed_at,
+            dry_run_mode=dry_run_mode,
         )
         updated_snapshot = self._build_snapshot(
             verification_result=verification_result,
@@ -273,16 +278,42 @@ class VerifyItemsStep(PipelineStep):
         verification_result: VerificationResult,
         started_at: datetime,
         completed_at: datetime,
+        dry_run_mode: bool,
     ) -> MigrationMetrics:
         """Resolve the metrics object for the current verification state."""
 
         duration_seconds = max((completed_at - started_at).total_seconds(), 0.0)
-        processed_items = len(upload_result.uploaded_documents)
-        processed_bytes = sum(document.size_bytes for document in upload_result.uploaded_documents)
+        dry_run_items = sum(1 for result in upload_result.item_results if result.dry_run)
+        if dry_run_mode:
+            processed_items = len(upload_result.item_results)
+            processed_bytes = sum(
+                document.size_bytes for document in upload_result.skipped_documents
+            )
+        else:
+            processed_items = len(upload_result.uploaded_documents)
+            processed_bytes = sum(
+                document.size_bytes for document in upload_result.uploaded_documents
+            )
         throughput = processed_items / duration_seconds if duration_seconds > 0.0 else 0.0
         average_item_size = processed_bytes // processed_items if processed_items > 0 else 0
 
         if metrics is not None:
+            if dry_run_mode:
+                return replace(
+                    metrics,
+                    duration_seconds=duration_seconds,
+                    throughput_items_per_second=throughput,
+                    average_item_size=average_item_size,
+                    processed_bytes=processed_bytes,
+                    total_items=processed_items,
+                    processed_items=processed_items,
+                    started_at=started_at,
+                    finished_at=completed_at,
+                    uploaded_items=0,
+                    verification_failures=0,
+                    total_bytes=processed_bytes,
+                )
+
             return replace(
                 metrics,
                 duration_seconds=duration_seconds,
@@ -311,12 +342,13 @@ class VerifyItemsStep(PipelineStep):
             peak_memory_usage_mb=None,
             total_items=processed_items,
             processed_items=processed_items,
-            successful_items=verification_result.verified_count,
-            failed_items=verification_result.failed_count,
-            skipped_items=0,
+            successful_items=0 if dry_run_mode else verification_result.verified_count,
+            failed_items=0 if dry_run_mode else verification_result.failed_count,
+            skipped_items=(len(upload_result.skipped_documents) if dry_run_mode else 0),
             retried_items=0,
-            uploaded_items=processed_items,
-            verification_failures=verification_result.failed_count,
+            uploaded_items=0 if dry_run_mode else processed_items,
+            verification_failures=0 if dry_run_mode else verification_result.failed_count,
+            dry_run_items=dry_run_items,
             total_bytes=processed_bytes,
             started_at=started_at,
             finished_at=completed_at,

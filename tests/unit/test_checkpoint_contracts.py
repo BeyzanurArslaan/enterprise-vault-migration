@@ -35,6 +35,8 @@ def _build_checkpoint_snapshot() -> CheckpointSnapshot:
         current_state="verifying",
         created_at=timestamp,
         updated_at=timestamp,
+        dry_run=False,
+        dry_run_items=0,
         version=1,
     )
 
@@ -107,6 +109,8 @@ def test_checkpoint_snapshot_is_immutable_and_versioned() -> None:
         "current_state",
         "created_at",
         "updated_at",
+        "dry_run",
+        "dry_run_items",
         "version",
     }
 
@@ -135,6 +139,10 @@ def test_checkpoint_snapshot_uses_serializable_safe_field_types() -> None:
     assert isinstance(checkpoint.current_state, str)
     assert isinstance(checkpoint.created_at, datetime)
     assert isinstance(checkpoint.updated_at, datetime)
+    assert isinstance(checkpoint.dry_run, bool)
+    assert isinstance(checkpoint.dry_run_items, int)
+    assert checkpoint.dry_run is False
+    assert checkpoint.dry_run_items == 0
 
     assert not any(
         forbidden in {field.name for field in fields(checkpoint)}

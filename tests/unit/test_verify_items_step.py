@@ -603,6 +603,70 @@ def test_verify_items_step_preserves_successful_verification_on_partial_failure(
     assert updated_context.execution_report.failed_steps == 1
 
 
+def test_verify_items_step_skips_target_port_during_dry_run() -> None:
+    """Dry-run verification should remain target-neutral and preserve dry-run metrics."""
+
+    started_at = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
+    completed_at = started_at + timedelta(seconds=5)
+    document = _build_transformed_document(
+        source_identifier="message-1",
+        archive_name="Archive One",
+        mailbox_address="alice@example.com",
+        subject="Quarterly Report",
+        message_size=2048,
+        attachment_sizes=(512,),
+    )
+    transformation_result = _build_transformation_result(
+        (document,),
+        started_at=started_at,
+        completed_at=completed_at,
+    )
+    upload_result = _build_upload_result(
+        (document,),
+        started_at=started_at,
+        completed_at=completed_at,
+    )
+    context = _build_step_context(
+        transformation_result=transformation_result,
+        upload_result=upload_result,
+        current_timestamp=completed_at,
+    )
+    dry_run_context = replace(
+        context,
+        execution_context=replace(
+            context.execution_context,
+            configuration=MigrationConfiguration(dry_run=True),
+        ),
+    )
+    execution_metrics = dry_run_context.execution_context.metrics
+    assert execution_metrics is not None
+    dry_run_context = replace(
+        dry_run_context,
+        execution_context=replace(
+            dry_run_context.execution_context,
+            metrics=replace(
+                execution_metrics,
+                successful_items=0,
+                skipped_items=1,
+                uploaded_items=0,
+                dry_run_items=1,
+            ),
+        ),
+    )
+    target_port = _RecordingTargetPort(documents={document.source_identifier: document})
+
+    updated_context = VerifyItemsStep(target_port=target_port).verify(dry_run_context)
+
+    assert target_port.lookup_calls == []
+    assert updated_context.verification_result is not None
+    assert updated_context.verification_result.verified_count == 0
+    assert updated_context.verification_result.failed_count == 0
+    assert updated_context.execution_context.metrics is not None
+    assert updated_context.execution_context.metrics.dry_run_items == 1
+    assert updated_context.execution_context.metrics.uploaded_items == 0
+    assert updated_context.execution_context.metrics.verification_failures == 0
+
+
 def test_verify_items_step_has_no_direct_mock_storionx_imports() -> None:
     """The verification step should remain decoupled from mock storionX imports."""
 

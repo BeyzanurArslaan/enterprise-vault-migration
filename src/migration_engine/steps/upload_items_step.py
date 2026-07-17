@@ -4,8 +4,9 @@ This module defines the pipeline step responsible for uploading transformed
 documents to storionX through the target port boundary. The step stays inside
 the orchestration layer and only consumes target-neutral transformation data.
 It treats stable source identifiers as idempotency keys, counts replayed
-uploads separately from newly created target documents, and keeps duplicate
-prevention inside the target boundary.
+uploads separately from newly created target documents, keeps duplicate
+prevention inside the target boundary, and supports analysis-only dry-run
+execution without mutating the target system.
 """
 
 from __future__ import annotations
@@ -33,7 +34,9 @@ class UploadItemsStep(PipelineStep):
 
     The step treats a repeated source identifier with a matching checksum as a
     successful idempotent replay and records it separately from newly created
-    target documents.
+    target documents. When the execution configuration enables dry-run mode,
+    the step emits neutral skipped upload results without calling the target
+    port.
     """
 
     def __init__(self, *, target_port: StorionXTargetPort) -> None:
@@ -97,6 +100,7 @@ class UploadItemsStep(PipelineStep):
         uploaded_document_ids: list[str] = []
         seen_source_identifiers: set[str] = set()
         current_document: TransformedDocument | None = None
+        dry_run_mode = context.execution_context.configuration.dry_run
 
         for transformed_document in context.transformation_result.transformed_documents:
             current_document = transformed_document
@@ -118,6 +122,19 @@ class UploadItemsStep(PipelineStep):
                 continue
 
             seen_source_identifiers.add(transformed_document.source_identifier)
+            if dry_run_mode:
+                skipped_documents.append(transformed_document)
+                item_results.append(
+                    replace(
+                        item_result,
+                        success=True,
+                        target_identifier=None,
+                        error_message=None,
+                        dry_run=True,
+                    )
+                )
+                continue
+
             if perform_target_upload:
                 try:
                     upload_response = self._target_port.upload_archived_file(
@@ -292,16 +309,21 @@ class UploadItemsStep(PipelineStep):
         document: TransformedDocument,
         success: bool,
         error_message: str | None,
+        target_identifier: str | None = None,
         idempotent_replay: bool = False,
+        dry_run: bool = False,
     ) -> UploadResult:
         """Build a stable item-level upload result for a transformed document."""
 
         return UploadResult(
             item_id=MigrationItemId(uuid5(NAMESPACE_URL, document.source_identifier)),
             success=success,
-            target_identifier=document.source_identifier,
+            target_identifier=(
+                target_identifier if target_identifier is not None else document.source_identifier
+            ),
             error_message=error_message,
             idempotent_replay=idempotent_replay,
+            dry_run=dry_run,
         )
 
     def _build_snapshot(
@@ -348,18 +370,22 @@ class UploadItemsStep(PipelineStep):
 
         _ = transformation_result
         duration_seconds = max((completed_at - started_at).total_seconds(), 0.0)
-        processed_items = (
-            len(upload_result.uploaded_documents)
-            + len(upload_result.failed_documents)
-            + len(upload_result.skipped_documents)
-        )
+        processed_items = len(upload_result.item_results)
+        dry_run_items = sum(1 for result in upload_result.item_results if result.dry_run)
         uploaded_items = len(upload_result.uploaded_documents)
         idempotent_replays = sum(
             1
             for result in upload_result.item_results
             if result.success and result.idempotent_replay
         )
-        unique_uploaded_items = max(uploaded_items - idempotent_replays, 0)
+        if dry_run_items > 0:
+            uploaded_items = 0
+            idempotent_replays = 0
+            unique_uploaded_items = 0
+            successful_items = 0
+        else:
+            unique_uploaded_items = max(uploaded_items - idempotent_replays, 0)
+            successful_items = uploaded_items
         failed_items = len(upload_result.failed_documents)
         skipped_items = len(upload_result.skipped_documents)
         all_documents = (
@@ -380,11 +406,12 @@ class UploadItemsStep(PipelineStep):
                 processed_bytes=processed_bytes,
                 total_items=processed_items,
                 processed_items=processed_items,
-                successful_items=uploaded_items,
+                successful_items=successful_items,
                 failed_items=failed_items,
                 skipped_items=skipped_items,
                 retried_items=0,
                 idempotent_replays=idempotent_replays,
+                dry_run_items=dry_run_items,
                 uploaded_items=unique_uploaded_items,
                 verification_failures=0,
                 total_bytes=processed_bytes,
@@ -401,11 +428,12 @@ class UploadItemsStep(PipelineStep):
             peak_memory_usage_mb=None,
             total_items=processed_items,
             processed_items=processed_items,
-            successful_items=uploaded_items,
+            successful_items=successful_items,
             failed_items=failed_items,
             skipped_items=skipped_items,
             retried_items=0,
             idempotent_replays=idempotent_replays,
+            dry_run_items=dry_run_items,
             uploaded_items=unique_uploaded_items,
             verification_failures=0,
             total_bytes=processed_bytes,

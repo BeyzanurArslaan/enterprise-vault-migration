@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import NAMESPACE_URL, uuid5
@@ -488,6 +489,47 @@ def test_upload_items_step_is_deterministic_for_same_input() -> None:
     assert first_result.upload_result == second_result.upload_result
     assert first_result.execution_report == second_result.execution_report
     assert first_result.execution_context.metrics == second_result.execution_context.metrics
+
+
+def test_upload_items_step_skips_target_port_during_dry_run() -> None:
+    """Dry-run uploads should skip the target boundary and remain neutral."""
+
+    started_at = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
+    completed_at = started_at + timedelta(seconds=6)
+    transformation_result = _build_transformation_result(
+        _build_documents()[:1],
+        started_at=started_at,
+        completed_at=completed_at,
+    )
+    context = _build_step_context(
+        transformation_result=transformation_result,
+        current_timestamp=completed_at,
+        tracker=ProgressTracker(snapshot=_build_snapshot(), metrics=_build_metrics()),
+    )
+    dry_run_context = replace(
+        context,
+        execution_context=replace(
+            context.execution_context,
+            configuration=MigrationConfiguration(dry_run=True),
+        ),
+    )
+    target_port = _RecordingTargetPort()
+
+    updated_context = UploadItemsStep(target_port=target_port).upload(dry_run_context)
+
+    assert target_port.calls == []
+    assert updated_context.upload_result is not None
+    assert updated_context.upload_result.uploaded_documents == ()
+    assert updated_context.upload_result.failed_documents == ()
+    assert updated_context.upload_result.skipped_documents == (
+        transformation_result.transformed_documents[0],
+    )
+    assert updated_context.upload_result.item_results[0].dry_run is True
+    assert updated_context.execution_context.metrics is not None
+    assert updated_context.execution_context.metrics.dry_run_items == 1
+    assert updated_context.execution_context.metrics.uploaded_items == 0
+    assert updated_context.execution_context.metrics.idempotent_replays == 0
+    assert updated_context.execution_context.metrics.skipped_items == 1
 
 
 def test_migration_engine_upload_boundary_avoids_direct_mock_storionx_imports() -> None:
