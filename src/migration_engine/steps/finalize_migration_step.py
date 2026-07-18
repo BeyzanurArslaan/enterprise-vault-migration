@@ -18,7 +18,11 @@ from ..execution_result import ExecutionResult
 from ..metrics import MigrationMetrics
 from ..progress_tracker import ProgressTracker
 from ..reconciliation import ReconciliationResult
-from ..reporting import build_execution_report_summary, resolve_final_status
+from ..reporting import (
+    build_error_breakdown_entries,
+    build_execution_report_summary,
+    resolve_final_status,
+)
 from ..state_machine import MigrationState, MigrationStateMachine
 from ..step_context import MigrationStepContext
 from ..transformation import TransformedDocument
@@ -104,13 +108,21 @@ class FinalizeMigrationStep(PipelineStep):
         )
         final_status = resolve_final_status(final_report)
         final_report = replace(final_report, final_status=final_status)
+        error_breakdown = build_error_breakdown_entries(
+            context,
+            final_status=final_status,
+        )
         summary = build_execution_report_summary(
             final_report,
             checkpoint_identifier=(
                 context.checkpoint.checkpoint_id if context.checkpoint is not None else None
             ),
         )
-        final_report = replace(final_report, summary=summary)
+        final_report = replace(
+            final_report,
+            summary=summary,
+            error_breakdown=error_breakdown,
+        )
         execution_result = ExecutionResult(
             success=not failed_execution,
             execution_report=final_report,

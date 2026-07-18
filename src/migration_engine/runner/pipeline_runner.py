@@ -22,11 +22,18 @@ from ports.retry_repository_port import RetryRepositoryPort
 from ..checkpoint import CheckpointSnapshot
 from ..configuration import MigrationConfiguration
 from ..context import MigrationContext
-from ..contracts import ExecutionContext, ExecutionReport, PipelineStep, ProgressSnapshot
+from ..contracts import (
+    ErrorBreakdownEntry,
+    ExecutionContext,
+    ExecutionReport,
+    PipelineStep,
+    ProgressSnapshot,
+)
 from ..execution_result import ExecutionResult
 from ..metrics import MigrationMetrics
 from ..pipeline import MigrationPipeline
 from ..progress_tracker import ProgressTracker
+from ..reporting import build_error_breakdown_entries
 from ..retry import RetryDecision, RetryPolicy
 from ..state_machine import MigrationState, MigrationStateMachine
 from ..step_context import MigrationStepContext
@@ -266,6 +273,19 @@ class PipelineRunner:
                     failure_timestamp = self._current_timestamp()
                     failure_state = MigrationState.FAILED
                     self.state_machine.transition_to(failure_state)
+                    failure_message = (
+                        "Pipeline step failed after retry exhaustion."
+                        if retry_decision is not None
+                        else "Pipeline step failed."
+                    )
+                    failure_error_breakdown = build_error_breakdown_entries(
+                        attempt_step_context,
+                        final_status="failed",
+                        failed_step_name=step.__class__.__name__,
+                        retryable=retry_decision is not None,
+                        attempt_count=attempt_number,
+                        failure_message=failure_message,
+                    )
                     failure_context = self._advance_context(
                         attempt_context,
                         current_step=step.__class__.__name__,
@@ -292,6 +312,7 @@ class PipelineRunner:
                             if current_step_context.execution_report is not None
                             else ()
                         ),
+                        error_breakdown=failure_error_breakdown,
                     )
                     self._rollback_steps(
                         completed_steps=completed_steps,
@@ -625,6 +646,7 @@ class PipelineRunner:
         completed: bool,
         configuration: MigrationConfiguration,
         warnings: tuple[str, ...] = (),
+        error_breakdown: tuple[ErrorBreakdownEntry, ...] = (),
     ) -> ExecutionReport:
         """Build an execution report for the current orchestration state."""
 
@@ -637,6 +659,7 @@ class PipelineRunner:
             completed=completed,
             metrics=metrics,
             warnings=warnings,
+            error_breakdown=error_breakdown,
             archive_names=configuration.archive_names,
             folder_paths=configuration.folder_paths,
             start_date=configuration.start_date,

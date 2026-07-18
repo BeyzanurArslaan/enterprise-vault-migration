@@ -10,9 +10,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 from ..metrics import MigrationMetrics
 from ..reconciliation import ReconciliationResult
+
+if TYPE_CHECKING:
+    from .error_breakdown import ErrorBreakdownEntry
 
 
 @dataclass(slots=True, frozen=True)
@@ -35,6 +39,8 @@ class ExecutionReport:
     warnings: tuple[str, ...] = ()
     final_status: str | None = None
     summary: str | None = None
+    error_breakdown: tuple[ErrorBreakdownEntry, ...] = ()
+    export_schema_version: str = "1"
     metrics: MigrationMetrics | None = None
     reconciliation: ReconciliationResult | None = None
     archive_names: tuple[str, ...] | None = None

@@ -238,6 +238,10 @@ def test_pipeline_runner_rolls_back_and_marks_failure() -> None:
     assert result.execution_report.completed is False
     assert result.execution_report.successful_steps == 1
     assert result.execution_report.failed_steps == 0
+    assert result.execution_report.error_breakdown
+    assert result.execution_report.error_breakdown[0].stage == "UploadItemsStep"
+    assert result.execution_report.error_breakdown[0].category == "pipeline"
+    assert result.execution_report.error_breakdown[0].code == "step_failed"
     assert result.execution_report.metrics is not None
     assert result.execution_report.metrics.total_items == 1
     assert result.execution_report.metrics.processed_items == 1

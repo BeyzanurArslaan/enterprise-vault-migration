@@ -94,6 +94,7 @@ class TransformItemsStep(PipelineStep):
         rehydrator = self._sis_rehydrator if self._sis_rehydrator is not None else SisRehydrator()
         transformed_documents: list[TransformedDocument] = []
         warnings: list[str] = []
+        failed_item_identifiers: list[str] = []
         current_archive_name: str | None = None
         current_mailbox_address: str | None = None
         current_item_name: str | None = None
@@ -114,6 +115,7 @@ class TransformItemsStep(PipelineStep):
                 )
             except ValidationError as exc:
                 failed_items += 1
+                failed_item_identifiers.append(mail_item.internet_message_id)
                 warnings.append(str(exc))
                 current_archive_name = archive.name
                 current_mailbox_address = mailbox.address if mailbox is not None else None
@@ -137,6 +139,7 @@ class TransformItemsStep(PipelineStep):
         skipped_items = 0
         transformation_result = TransformationResult(
             transformed_documents=tuple(transformed_documents),
+            failed_item_identifiers=tuple(failed_item_identifiers),
             skipped_items=skipped_items,
             failed_items=failed_items,
             warnings=tuple(warnings),

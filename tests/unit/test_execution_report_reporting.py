@@ -165,6 +165,8 @@ def test_execution_report_supports_backward_compatible_defaults() -> None:
     assert report.warnings == ()
     assert report.final_status is None
     assert report.summary is None
+    assert report.error_breakdown == ()
+    assert report.export_schema_version == "1"
     assert report.metrics is None
     assert report.reconciliation is None
     assert report.archive_names is None
@@ -273,9 +275,11 @@ def test_execution_report_summary_and_dict_are_deterministic() -> None:
 
     assert report_dict == repeated_dict
     assert report_dict["job_id"] == "migration-1"
+    assert report_dict["export_schema_version"] == "1"
     assert report_dict["final_status"] == FINAL_STATUS_COMPLETED_WITH_WARNINGS
     assert report_dict["resumed"] is True
     assert report_dict["summary"] == summary
+    assert report_dict["error_breakdown"] == []
     timing = cast(dict[str, object], report_dict["timing"])
     scope = cast(dict[str, object], report_dict["scope"])
     metrics = cast(dict[str, object], report_dict["metrics"])

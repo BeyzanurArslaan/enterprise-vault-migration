@@ -8,6 +8,8 @@ dataset behavior, and structural preservation of uploaded documents.
 
 from __future__ import annotations
 
+import csv
+import json
 import re
 from collections.abc import Iterator
 from dataclasses import replace
@@ -25,6 +27,7 @@ from migration_engine.contracts import ExecutionContext, ProgressSnapshot
 from migration_engine.execution_result import ExecutionResult
 from migration_engine.pipeline import MigrationPipeline
 from migration_engine.progress_tracker import ProgressTracker
+from migration_engine.reporting import execution_report_to_csv, execution_report_to_json
 from migration_engine.runner import PipelineRunner
 from migration_engine.state_machine import MigrationState
 from migration_engine.step_context import MigrationStepContext
@@ -455,6 +458,44 @@ def test_end_to_end_migration_workflow_is_deterministic_for_same_seed() -> None:
         first_runner.current_step_context.verification_result
         == second_runner.current_step_context.verification_result
     )
+
+
+def test_end_to_end_migration_workflow_exports_error_breakdown_for_failure() -> None:
+    """The workflow should export a structured audit trail when uploads fail."""
+
+    source_adapter = _build_source_adapter(seed=21)
+    source_vault_stores = source_adapter.discover_archives()
+    first_mail_item = source_vault_stores[0].archives[0].mailboxes[0].mail_items[0]
+    failing_target_adapter = _FailingMockStorionXTargetAdapter(
+        fail_on_identifier=first_mail_item.internet_message_id,
+        workspace_id="workspace-1",
+        session_id="session-1",
+        started_at=datetime(2026, 1, 1, 12, 0, tzinfo=UTC),
+        upload_service=UploadService(),
+        document_storage=DocumentStorage(),
+    )
+
+    runner, _, _, result = _run_workflow(
+        seed=21,
+        target_port=failing_target_adapter,
+        vault_stores=source_vault_stores,
+    )
+
+    assert result.success is True
+    assert result.execution_report is not None
+    assert result.execution_report.error_breakdown
+    assert result.execution_report.final_status == "failed"
+    assert result.execution_report.error_breakdown[0].stage == "upload"
+
+    json_payload = execution_report_to_json(result.execution_report)
+    csv_payload = execution_report_to_csv(result.execution_report)
+
+    parsed_json = json.loads(json_payload)
+    parsed_csv = list(csv.reader(csv_payload.splitlines()))
+
+    assert parsed_json["error_breakdown"][0]["stage"] == "upload"
+    assert parsed_csv[0][0] == "export_schema_version"
+    assert len(parsed_csv) == 2
 
 
 def test_end_to_end_migration_workflow_differs_for_different_seed() -> None:

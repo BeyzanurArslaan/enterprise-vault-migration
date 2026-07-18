@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from ..contracts import ExecutionReport
+from ..contracts import ErrorBreakdownEntry, ExecutionReport
 from ..metrics import MigrationMetrics
 from ..reconciliation import ReconciliationResult
 from .report_summary import build_execution_report_summary, resolve_final_status
@@ -30,6 +30,7 @@ def execution_report_to_dict(report: ExecutionReport) -> dict[str, object]:
 
     summary = format_execution_report(report)
     return {
+        "export_schema_version": report.export_schema_version,
         "job_id": report.job_id,
         "final_status": resolve_final_status(report),
         "completed": report.completed,
@@ -53,6 +54,9 @@ def execution_report_to_dict(report: ExecutionReport) -> dict[str, object]:
             "end_date": _serialize_datetime(report.end_date),
         },
         "warnings": list(report.warnings),
+        "error_breakdown": [
+            _serialize_error_breakdown_entry(entry) for entry in report.error_breakdown
+        ],
         "metrics": _serialize_metrics(report.metrics),
         "reconciliation": _serialize_reconciliation(report.reconciliation),
     }
@@ -134,6 +138,25 @@ def _serialize_reconciliation(
         "checksum_mismatches": list(reconciliation.checksum_mismatches),
         "status": reconciliation.status,
         "is_reconciled": reconciliation.is_reconciled,
+    }
+
+
+def _serialize_error_breakdown_entry(
+    entry: ErrorBreakdownEntry,
+) -> dict[str, object]:
+    """Serialize an error breakdown entry into a JSON-safe dictionary."""
+
+    return {
+        "source_identifier": entry.source_identifier,
+        "stage": entry.stage,
+        "category": entry.category,
+        "code": entry.code,
+        "message": entry.message,
+        "retryable": entry.retryable,
+        "attempt_count": entry.attempt_count,
+        "final_status": entry.final_status,
+        "archive_identifier": entry.archive_identifier,
+        "item_type": entry.item_type,
     }
 
 

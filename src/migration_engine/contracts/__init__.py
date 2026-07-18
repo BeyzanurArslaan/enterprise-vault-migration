@@ -7,6 +7,7 @@ contracts together with the abstract pipeline step interface.
 
 from __future__ import annotations
 
+from .error_breakdown import ErrorBreakdownEntry
 from .execution_context import ExecutionContext
 from .execution_report import ExecutionReport
 from .pipeline_step import PipelineStep
@@ -26,6 +27,7 @@ from .source_models import (
 )
 
 __all__: list[str] = [
+    "ErrorBreakdownEntry",
     "ExecutionContext",
     "ExecutionReport",
     "PipelineStep",

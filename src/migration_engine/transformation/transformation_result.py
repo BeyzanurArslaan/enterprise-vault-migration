@@ -23,6 +23,7 @@ class TransformationResult:
     warnings: tuple[str, ...]
     started_at: datetime | None
     completed_at: datetime | None
+    failed_item_identifiers: tuple[str, ...] = ()
 
 
 __all__: list[str] = ["TransformationResult"]

@@ -109,16 +109,19 @@ def _build_transformation_result(
     *,
     started_at: datetime,
     completed_at: datetime,
+    failed_items: int = 0,
+    failed_item_identifiers: tuple[str, ...] = (),
 ) -> TransformationResult:
     """Create a sample transformation result for finalization tests."""
 
     return TransformationResult(
         transformed_documents=transformed_documents,
         skipped_items=0,
-        failed_items=0,
+        failed_items=failed_items,
         warnings=(),
         started_at=started_at,
         completed_at=completed_at,
+        failed_item_identifiers=failed_item_identifiers,
     )
 
 
@@ -529,6 +532,69 @@ def test_finalize_migration_step_records_reconciliation_summary() -> None:
     assert metrics.missing_items == 1
     assert metrics.checksum_mismatches == 1
     assert metrics.idempotent_replays == 0
+
+
+def test_finalize_migration_step_records_structured_error_breakdown() -> None:
+    """The step should surface deterministic error breakdown entries."""
+
+    started_at = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
+    completed_at = started_at + timedelta(seconds=5)
+    first_document = _build_transformed_document(
+        source_identifier="message-1",
+        archive_name="Archive One",
+        mailbox_address="alice@example.com",
+        subject="Quarterly Report",
+    )
+    transformation_result = _build_transformation_result(
+        (first_document,),
+        started_at=started_at,
+        completed_at=completed_at,
+        failed_items=1,
+        failed_item_identifiers=("message-2",),
+    )
+    upload_result = _build_upload_result(
+        (),
+        failed_documents=(first_document,),
+        started_at=started_at,
+        completed_at=completed_at,
+    )
+    verification_result = _build_verification_result(
+        verified_documents=(),
+        failed_document_ids=("message-1",),
+        missing_document_ids=("message-1",),
+        started_at=started_at,
+        completed_at=completed_at,
+    )
+    context = _build_context(
+        transformation_result=transformation_result,
+        upload_result=upload_result,
+        verification_result=verification_result,
+        report=_build_execution_report(metrics=_build_metrics(), completed=False),
+        state=MigrationState.FAILED,
+        execution_state=MigrationState.FAILED,
+    )
+
+    updated_context = FinalizeMigrationStep().finalize_migration(context)
+
+    execution_report = updated_context.execution_report
+    assert execution_report is not None
+    assert execution_report.final_status == "failed"
+    error_breakdown = execution_report.error_breakdown
+    assert [entry.stage for entry in error_breakdown] == [
+        "transformation",
+        "upload",
+        "verification",
+    ]
+    assert error_breakdown[0].source_identifier == "message-2"
+    assert error_breakdown[0].archive_identifier is None
+    assert error_breakdown[0].item_type is None
+    assert error_breakdown[1].source_identifier == "message-1"
+    assert error_breakdown[1].archive_identifier == "Archive One"
+    assert error_breakdown[1].item_type == "email"
+    assert error_breakdown[2].source_identifier == "message-1"
+    assert error_breakdown[2].archive_identifier == "Archive One"
+    assert error_breakdown[2].item_type == "email"
+    assert all(entry.final_status == "failed" for entry in error_breakdown)
 
 
 def test_finalize_migration_step_handles_dry_run_reconciliation() -> None:
